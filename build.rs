@@ -36,6 +36,9 @@ fn main() {
     println!("cargo:rustc-link-lib=dylib=clang-cpp");
     println!("cargo:rustc-link-lib=dylib=LLVM");
     println!("cargo:rustc-link-lib=dylib=stdc++");
+    // clang-tidy is only available as a static lib on most distros
+    println!("cargo:rustc-link-search=native=/usr/lib/llvm-22/lib");
+    println!("cargo:rustc-link-search=native=/usr/lib");
 
     println!("cargo:rerun-if-changed=bridge/clang_bridge.cpp");
     println!("cargo:rerun-if-changed=bridge/clang_bridge.h");

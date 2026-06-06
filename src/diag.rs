@@ -11,7 +11,7 @@ pub enum Severity {
 }
 
 impl Severity {
-    fn from_u8(v: u8) -> Self {
+    pub(crate) fn from_u8(v: u8) -> Self {
         match v {
             0 => Severity::Note,
             1 => Severity::Remark,

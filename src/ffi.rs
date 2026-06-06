@@ -7,6 +7,8 @@ use std::ffi::c_char;
 #[repr(C)] pub struct CB_TransUnit(());
 #[repr(C)] pub struct CB_DocIter(());
 #[repr(C)] pub struct CB_DiagIter(());
+#[repr(C)] pub struct CB_Symbol(());
+#[repr(C)] pub struct CB_TidyIter(());
 
 #[repr(C)]
 pub struct CB_DocItem {
@@ -30,26 +32,39 @@ pub struct CB_Diag {
     pub check_name: *const c_char,
 }
 
-unsafe impl Send for CB_DocItem {}
-unsafe impl Send for CB_Diag {}
-
 extern "C" {
+    // Index / TransUnit
     pub fn cb_index_create() -> *mut CB_Index;
     pub fn cb_index_destroy(idx: *mut CB_Index);
-
-    pub fn cb_parse(
-        idx:         *mut CB_Index,
-        source_file: *const c_char,
-        args:        *const *const c_char,
-        nargs:       usize,
-    ) -> *mut CB_TransUnit;
+    pub fn cb_parse(idx: *mut CB_Index, source_file: *const c_char,
+                    args: *const *const c_char, nargs: usize) -> *mut CB_TransUnit;
     pub fn cb_transunit_destroy(tu: *mut CB_TransUnit);
 
+    // Doc extraction
     pub fn cb_doc_extract(tu: *mut CB_TransUnit) -> *mut CB_DocIter;
     pub fn cb_doc_iter_next(it: *mut CB_DocIter, out: *mut CB_DocItem) -> i32;
     pub fn cb_doc_iter_destroy(it: *mut CB_DocIter);
 
+    // Symbol lookup
+    pub fn cb_symbol_at(tu: *mut CB_TransUnit, line: u32, col: u32) -> *mut CB_Symbol;
+    pub fn cb_symbol_name(sym: *const CB_Symbol) -> *const c_char;
+    pub fn cb_symbol_usr(sym: *const CB_Symbol) -> *const c_char;
+    pub fn cb_symbol_kind(sym: *const CB_Symbol) -> *const c_char;
+    pub fn cb_symbol_brief(sym: *const CB_Symbol) -> *const c_char;
+    pub fn cb_symbol_signature(sym: *const CB_Symbol) -> *const c_char;
+    pub fn cb_symbol_def_file(sym: *const CB_Symbol) -> *const c_char;
+    pub fn cb_symbol_def_line(sym: *const CB_Symbol) -> u32;
+    pub fn cb_symbol_destroy(sym: *mut CB_Symbol);
+
+    // Compiler diagnostics
     pub fn cb_diag_iter(tu: *mut CB_TransUnit) -> *mut CB_DiagIter;
     pub fn cb_diag_next(it: *mut CB_DiagIter, out: *mut CB_Diag) -> i32;
     pub fn cb_diag_iter_destroy(it: *mut CB_DiagIter);
+
+    // clang-tidy
+    pub fn cb_tidy_run(clang_tidy_bin: *const c_char, source_file: *const c_char,
+                       checks: *const c_char, args: *const *const c_char,
+                       nargs: usize) -> *mut CB_TidyIter;
+    pub fn cb_tidy_next(it: *mut CB_TidyIter, out: *mut CB_Diag) -> i32;
+    pub fn cb_tidy_iter_destroy(it: *mut CB_TidyIter);
 }
