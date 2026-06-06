@@ -55,70 +55,26 @@ API gaps and quality issues. Updated after each work session.
 
 ---
 
-## Remaining — freight LSP
+## Freight LSP — 100% coverage achieved 🎉
 
-### `cb_inclusions` — `#include` graph
+All LSP methods needed for freight's C/C++ language server are implemented:
 
-Missing: `CB_Inclusion* cb_inclusions(CB_TU*, size_t* count)`.
-
-Register a `PPCallbacks` subclass during parse to record `InclusionDirective`
-events: including file, included file, directive source range.
-
-Maps to LSP `textDocument/documentLink`.
-
-*Note: requires pre-parse registration; harder than post-parse queries.*
-
----
-
-### `cb_parse_unsaved` — parse entirely from memory
-
-`cb_parse` requires a real file on disk; the reparse path accepts an unsaved
-buffer but needs the initial parse to have already happened.
-
-Add: `CB_TU* cb_parse_unsaved(const char* filename, const char* contents, size_t len, const char* const* args, int nargs)`.
-
-Use `ASTUnit::LoadFromCompilerInvocation` with an `llvm::MemoryBuffer` as the
-virtual main file.
-
----
-
-### `cb_semantic_tokens` — per-token kind map
-
-Missing: `CB_Token* cb_semantic_tokens(CB_TU*, size_t* count)`.
-
-Classify every identifier: namespace, type, function, method, parameter,
-variable, field, enum-member, macro, keyword.
-
-Maps to LSP `textDocument/semanticTokens/full`.
-
----
-
-### `cb_format` — clang-format in-process
-
-Missing: `CB_Edit* cb_format(const char* source, size_t len, const char* style_dir, size_t* edit_count)`.
-
-Call `clang::format::reformat` with `FormatStyle` from the nearest `.clang-format`.
-Return text-edit array (range + replacement).
-
-Maps to LSP `textDocument/formatting` and `textDocument/rangeFormatting`.
-
----
-
-### `cb_references` — all usages by USR
-
-Missing: `CB_Location* cb_references(CB_Index*, const char* usr, size_t* count)`.
-
-Use `clang::index::IndexingAction` across all parsed TUs to find every
-`DeclOccurrence` matching the USR.
-
-Maps to LSP `textDocument/references` and `workspace/symbol`.
-
----
-
-### `cb_index_last_error` — parse failure message
-
-`cb_parse` returns `nullptr` on failure with no error text. Store the last error
-in `CB_Index`; expose `const char* cb_index_last_error(CB_Index*)`.
+| LSP Method | API |
+|---|---|
+| `textDocument/hover` | `cb_hover_full`, `cb_hover_markdown`, `cb_raw_comment_at`, `cb_type_at`, `cb_macro_at` |
+| `textDocument/definition` | `cb_goto_definition` |
+| `textDocument/completion` | `cb_complete` |
+| `textDocument/publishDiagnostics` | `cb_diag_iter` + fix-its |
+| `textDocument/documentSymbol` | `cb_document_symbols` |
+| `textDocument/signatureHelp` | `cb_signature_help` |
+| `textDocument/inlayHint` | `cb_inlay_hints` |
+| `textDocument/semanticTokens/full` | `cb_semantic_tokens` |
+| `textDocument/formatting` | `cb_format` |
+| `textDocument/references` | `cb_references` |
+| `textDocument/rename` + `prepareRename` | `cb_rename` |
+| `textDocument/documentLink` | `cb_inclusions` |
+| Parse from memory | `cb_parse_unsaved` |
+| Parse error reporting | `cb_index_last_error` |
 
 ---
 
