@@ -68,6 +68,62 @@ pub struct CB_FixIt {
 pub struct CB_SigHelp(());
 
 #[repr(C)]
+pub struct CB_Inclusion {
+    pub including_file: *const c_char,
+    pub included_file:  *const c_char,
+    pub line:      u32,
+    pub start_col: u32,
+    pub end_col:   u32,
+}
+
+#[repr(C)]
+pub struct CB_InclusionList(());
+
+#[repr(C)]
+pub struct CB_SemanticToken {
+    pub line:       u32,
+    pub col:        u32,
+    pub length:     u32,
+    pub token_type: u8,
+}
+
+#[repr(C)]
+pub struct CB_SemanticTokenList(());
+
+#[repr(C)]
+pub struct CB_FormatEdit {
+    pub offset:      u32,
+    pub length:      u32,
+    pub replacement: *const c_char,
+}
+
+#[repr(C)]
+pub struct CB_FormatList(());
+
+#[repr(C)]
+pub struct CB_Reference {
+    pub file:          *const c_char,
+    pub line:          u32,
+    pub col:           u32,
+    pub is_definition: i32,
+}
+
+#[repr(C)]
+pub struct CB_ReferenceList(());
+
+#[repr(C)]
+pub struct CB_RenameEdit {
+    pub file:         *const c_char,
+    pub line:         u32,
+    pub col:          u32,
+    pub old_name_len: u32,
+    pub new_name:     *const c_char,
+}
+
+#[repr(C)]
+pub struct CB_RenameList(());
+
+#[repr(C)]
 pub struct CB_InlayHint {
     pub line:  u32,
     pub col:   u32,
@@ -192,4 +248,61 @@ extern "C" {
 
     // Macro hover
     pub fn cb_macro_at(tu: *mut CB_TransUnit, line: u32, col: u32) -> *mut c_char;
+
+    // Parse error
+    pub fn cb_index_last_error(idx: *const CB_Index) -> *const c_char;
+
+    // Parse from memory
+    pub fn cb_parse_unsaved(
+        idx: *mut CB_Index,
+        virtual_path: *const c_char,
+        contents: *const c_char,
+        len: usize,
+        args: *const *const c_char,
+        nargs: usize,
+    ) -> *mut CB_TransUnit;
+
+    // Inclusions
+    pub fn cb_inclusions(tu: *mut CB_TransUnit) -> *mut CB_InclusionList;
+    pub fn cb_inclusion_count(list: *const CB_InclusionList) -> usize;
+    pub fn cb_inclusion_get(list: *const CB_InclusionList, i: usize, out: *mut CB_Inclusion);
+    pub fn cb_inclusion_list_destroy(list: *mut CB_InclusionList);
+
+    // Semantic tokens
+    pub fn cb_semantic_tokens(tu: *mut CB_TransUnit) -> *mut CB_SemanticTokenList;
+    pub fn cb_semantic_token_count(list: *const CB_SemanticTokenList) -> usize;
+    pub fn cb_semantic_token_get(
+        list: *const CB_SemanticTokenList,
+        i: usize,
+        out: *mut CB_SemanticToken,
+    );
+    pub fn cb_semantic_token_list_destroy(list: *mut CB_SemanticTokenList);
+
+    // Format
+    pub fn cb_format(
+        source: *const c_char,
+        len: usize,
+        style_dir: *const c_char,
+    ) -> *mut CB_FormatList;
+    pub fn cb_format_edit_count(list: *const CB_FormatList) -> usize;
+    pub fn cb_format_edit_get(list: *const CB_FormatList, i: usize, out: *mut CB_FormatEdit);
+    pub fn cb_format_list_destroy(list: *mut CB_FormatList);
+
+    // References
+    pub fn cb_references(tu: *mut CB_TransUnit, usr: *const c_char) -> *mut CB_ReferenceList;
+    pub fn cb_reference_count(list: *const CB_ReferenceList) -> usize;
+    pub fn cb_reference_get(list: *const CB_ReferenceList, i: usize, out: *mut CB_Reference);
+    pub fn cb_reference_list_destroy(list: *mut CB_ReferenceList);
+
+    // Rename
+    pub fn cb_rename(
+        tu: *mut CB_TransUnit,
+        usr: *const c_char,
+        new_name: *const c_char,
+    ) -> *mut CB_RenameList;
+    pub fn cb_rename_edit_count(list: *const CB_RenameList) -> usize;
+    pub fn cb_rename_edit_get(list: *const CB_RenameList, i: usize, out: *mut CB_RenameEdit);
+    pub fn cb_rename_has_conflict(list: *const CB_RenameList) -> i32;
+    pub fn cb_rename_conflict_message(list: *const CB_RenameList) -> *const c_char;
+    pub fn cb_rename_list_destroy(list: *mut CB_RenameList);
 }

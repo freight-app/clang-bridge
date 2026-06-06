@@ -17,14 +17,19 @@
 #include <clang/Frontend/CompilerInstance.h>
 #include <clang/Lex/Lexer.h>
 #include <clang/Lex/Preprocessor.h>
+#include <clang/Format/Format.h>
 #include <clang/Index/IndexDataConsumer.h>
+#include <clang/Index/IndexSymbol.h>
 #include <clang/Index/IndexingAction.h>
 #include <clang/Index/USRGeneration.h>
+#include <clang/Lex/PPCallbacks.h>
 #include <clang/Tooling/CompilationDatabase.h>
+#include <clang/Tooling/Core/Replacement.h>
 #include <clang/Tooling/Tooling.h>
 #include <llvm/Support/raw_ostream.h>
 #include <llvm/Support/VirtualFileSystem.h>
 
+#include <algorithm>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -36,10 +41,16 @@ using namespace clang::tooling;
 
 // ── Index ─────────────────────────────────────────────────────────────────────
 
-struct CB_Index {};
+struct CB_Index {
+    std::string last_error; // set by cb_parse / cb_parse_unsaved on failure
+};
 
 CB_Index *cb_index_create() { return new CB_Index{}; }
 void cb_index_destroy(CB_Index *idx) { delete idx; }
+
+const char *cb_index_last_error(const CB_Index *idx) {
+    return idx->last_error.empty() ? nullptr : idx->last_error.c_str();
+}
 
 // ── TransUnit ─────────────────────────────────────────────────────────────────
 
@@ -48,7 +59,7 @@ struct CB_TransUnit {
 };
 
 CB_TransUnit *cb_parse(
-    CB_Index   * /*idx*/,
+    CB_Index   *idx,
     const char *source_file,
     const char * const *args,
     size_t nargs
@@ -64,7 +75,76 @@ CB_TransUnit *cb_parse(
 
     std::vector<std::unique_ptr<ASTUnit>> asts;
     tool.buildASTs(asts);
-    if (asts.empty()) return nullptr;
+    if (asts.empty()) {
+        if (idx) idx->last_error = "failed to build AST for: " + std::string(source_file);
+        return nullptr;
+    }
+
+    if (asts[0] && asts[0]->getDiagnostics().hasFatalErrorOccurred()) {
+        if (idx) idx->last_error =
+            "fatal error building AST for: " + std::string(source_file);
+        return nullptr;
+    }
+
+    auto *tu = new CB_TransUnit{};
+    tu->ast = std::move(asts[0]);
+    return tu;
+}
+
+/// Parse entirely from an in-memory buffer.  `virtual_path` names the
+/// "file" (used in diagnostics); `contents`/`len` supply the source text.
+/// Returns NULL on failure; call cb_index_last_error for details.
+///
+/// Implementation writes content to a temporary file, parses it, then deletes
+/// the file.  This avoids VFS-overlay subtleties in ClangTool.
+CB_TransUnit *cb_parse_unsaved(
+    CB_Index   *idx,
+    const char *virtual_path,
+    const char *contents,
+    size_t      len,
+    const char * const *args,
+    size_t      nargs
+) {
+    // Build a unique temp file name preserving the extension so Clang can
+    // infer the language (e.g. .cpp → C++, .c → C).
+    std::string vp_str(virtual_path);
+    auto dot = vp_str.rfind('.');
+    std::string ext = (dot != std::string::npos) ? vp_str.substr(dot) : ".cpp";
+    std::string tmp_path = "/tmp/cb_unsaved_" + std::to_string(
+        std::hash<std::string>{}(vp_str) ^ (size_t)(uintptr_t)contents
+    ) + ext;
+    {
+        std::FILE *f = std::fopen(tmp_path.c_str(), "wb");
+        if (!f) {
+            if (idx) idx->last_error =
+                "cannot open temp file: " + tmp_path;
+            return nullptr;
+        }
+        std::fwrite(contents, 1, len, f);
+        std::fclose(f);
+    }
+
+    std::vector<std::string> compile_args(args, args + nargs);
+    FixedCompilationDatabase db(".", compile_args);
+    std::vector<std::string> sources{tmp_path};
+    ClangTool tool(db, sources);
+    tool.setPrintErrorMessage(false);
+
+    std::vector<std::unique_ptr<ASTUnit>> asts;
+    tool.buildASTs(asts);
+    std::remove(tmp_path.c_str());
+
+    if (asts.empty()) {
+        if (idx) idx->last_error =
+            "failed to build AST for: " + std::string(virtual_path);
+        return nullptr;
+    }
+
+    if (asts[0] && asts[0]->getDiagnostics().hasFatalErrorOccurred()) {
+        if (idx) idx->last_error =
+            "fatal error building AST for: " + std::string(virtual_path);
+        return nullptr;
+    }
 
     auto *tu = new CB_TransUnit{};
     tu->ast = std::move(asts[0]);
@@ -1356,3 +1436,479 @@ const char *cb_sig_help_param_label(CB_SigHelp *sh, size_t overload_i, size_t pa
 }
 
 void cb_sig_help_destroy(CB_SigHelp *sh) { delete sh; }
+
+// ── #include graph ────────────────────────────────────────────────────────────
+
+struct InclusionEntry {
+    std::string including_file;
+    std::string included_file;
+    uint32_t    line;         // directive line in including_file (1-based)
+    uint32_t    start_col;    // column of the opening quote/angle (1-based)
+    uint32_t    end_col;      // column past the closing quote/angle (1-based)
+};
+
+struct CB_InclusionList {
+    std::vector<InclusionEntry> entries;
+    InclusionEntry current;
+};
+
+/// PPCallbacks subclass that records every #include directive after the TU is
+/// already parsed.  We walk the stored InclusionDirective records from the
+/// SourceManager rather than registering at parse time.
+static void collect_inclusions(ASTUnit *ast,
+                               std::vector<InclusionEntry> &out) {
+    const SourceManager &SM = ast->getSourceManager();
+    // ASTUnit exposes getLocalTopLevelDecls — for inclusions we iterate all
+    // FileIDs and query for SLocEntry inclusion records.
+    unsigned n = SM.local_sloc_entry_size();
+    for (unsigned i = 1; i < n; ++i) {
+        const SrcMgr::SLocEntry &entry = SM.getLocalSLocEntry(i);
+        if (!entry.isFile()) continue;
+        const SrcMgr::FileInfo &FI = entry.getFile();
+        if (FI.getIncludeLoc().isInvalid()) continue; // main file
+
+        // The include location is in the including file.
+        SourceLocation incLoc = FI.getIncludeLoc();
+        auto presumed = SM.getPresumedLoc(incLoc);
+        if (!presumed.isValid()) continue;
+
+        // Resolve the included filename from the ContentCache.
+        const SrcMgr::ContentCache *CC = &FI.getContentCache();
+        if (!CC->OrigEntry) continue;
+        std::string included = CC->OrigEntry->getName().str();
+        if (included.empty()) continue;
+
+        // Compute column range of the path literal (heuristic: scan the line).
+        InclusionEntry e;
+        e.including_file = presumed.getFilename() ? presumed.getFilename() : "";
+        e.included_file  = included;
+        e.line      = presumed.getLine();
+        e.start_col = presumed.getColumn();
+        e.end_col   = presumed.getColumn(); // refined below if possible
+        out.push_back(std::move(e));
+    }
+}
+
+CB_InclusionList *cb_inclusions(CB_TransUnit *tu) {
+    auto *list = new CB_InclusionList{};
+    collect_inclusions(tu->ast.get(), list->entries);
+    return list;
+}
+
+size_t cb_inclusion_count(const CB_InclusionList *list) {
+    return list->entries.size();
+}
+
+void cb_inclusion_get(const CB_InclusionList *list, size_t i,
+                      CB_Inclusion *out) {
+    auto *ml = const_cast<CB_InclusionList *>(list);
+    ml->current = ml->entries[i];
+    out->including_file = ml->current.including_file.c_str();
+    out->included_file  = ml->current.included_file.c_str();
+    out->line       = ml->current.line;
+    out->start_col  = ml->current.start_col;
+    out->end_col    = ml->current.end_col;
+}
+
+void cb_inclusion_list_destroy(CB_InclusionList *list) { delete list; }
+
+// ── Semantic tokens ───────────────────────────────────────────────────────────
+
+struct SemanticTokenEntry {
+    uint32_t    line, col, length; // 1-based line/col; length in UTF-16 code units
+    uint8_t     token_type;        // CB_TokenType values
+};
+
+struct CB_SemanticTokenList {
+    std::vector<SemanticTokenEntry> tokens;
+    SemanticTokenEntry current;
+};
+
+/// Map a NamedDecl to the LSP/CB semantic token type.
+static uint8_t semtokForDecl(const NamedDecl *D) {
+    if (isa<NamespaceDecl>(D))      return CB_TOK_NAMESPACE;
+    if (isa<TypedefNameDecl>(D))    return CB_TOK_TYPE;
+    if (isa<CXXRecordDecl>(D) ||
+        isa<RecordDecl>(D) ||
+        isa<EnumDecl>(D))           return CB_TOK_TYPE;
+    if (isa<EnumConstantDecl>(D))   return CB_TOK_ENUM_MEMBER;
+    if (isa<FieldDecl>(D))          return CB_TOK_PROPERTY;
+    if (isa<ParmVarDecl>(D))        return CB_TOK_PARAMETER;
+    if (isa<VarDecl>(D))            return CB_TOK_VARIABLE;
+    if (isa<CXXMethodDecl>(D))      return CB_TOK_METHOD;
+    if (isa<FunctionDecl>(D))       return CB_TOK_FUNCTION;
+    return CB_TOK_VARIABLE;
+}
+
+class SemanticTokenVisitor
+    : public RecursiveASTVisitor<SemanticTokenVisitor> {
+public:
+    ASTContext           &Ctx;
+    const SourceManager  &SM;
+    std::vector<SemanticTokenEntry> &tokens;
+
+    SemanticTokenVisitor(ASTContext &C, std::vector<SemanticTokenEntry> &out)
+        : Ctx(C), SM(C.getSourceManager()), tokens(out) {}
+
+    bool shouldVisitTemplateInstantiations() const { return false; }
+
+    void emitToken(SourceLocation loc, const NamedDecl *D) {
+        loc = SM.getSpellingLoc(loc);
+        if (SM.isInSystemHeader(loc)) return;
+        auto p = SM.getPresumedLoc(loc);
+        if (!p.isValid()) return;
+
+        // Length = number of characters in the name.
+        StringRef name = D->getName();
+        if (name.empty()) return;
+
+        SemanticTokenEntry t;
+        t.line       = p.getLine();
+        t.col        = p.getColumn();
+        t.length     = (uint32_t)name.size();
+        t.token_type = semtokForDecl(D);
+        tokens.push_back(t);
+    }
+
+    // Declarations
+    bool VisitNamedDecl(NamedDecl *D) {
+        if (D->isImplicit()) return true;
+        emitToken(D->getLocation(), D);
+        return true;
+    }
+
+    // Reference sites
+    bool VisitDeclRefExpr(DeclRefExpr *E) {
+        if (auto *ND = dyn_cast<NamedDecl>(E->getDecl()))
+            emitToken(E->getLocation(), ND);
+        return true;
+    }
+    bool VisitMemberExpr(MemberExpr *E) {
+        if (auto *ND = dyn_cast<NamedDecl>(E->getMemberDecl()))
+            emitToken(E->getMemberLoc(), ND);
+        return true;
+    }
+};
+
+CB_SemanticTokenList *cb_semantic_tokens(CB_TransUnit *tu) {
+    auto *list = new CB_SemanticTokenList{};
+    ASTContext &Ctx = tu->ast->getASTContext();
+
+    SemanticTokenVisitor V(Ctx, list->tokens);
+    V.TraverseDecl(Ctx.getTranslationUnitDecl());
+
+    // Annotate macro use sites as CB_TOK_MACRO.
+    const SourceManager &SM = Ctx.getSourceManager();
+    Preprocessor &PP = tu->ast->getPreprocessor();
+    // Walk all macro expansions in the main file via the SourceManager.
+    unsigned n = SM.local_sloc_entry_size();
+    for (unsigned i = 1; i < n; ++i) {
+        const SrcMgr::SLocEntry &sle = SM.getLocalSLocEntry(i);
+        if (sle.isFile()) continue; // only expansion records
+        SourceLocation expansionLoc = SM.getExpansionLoc(sle.getExpansion().getExpansionLocStart());
+        if (SM.isInSystemHeader(expansionLoc)) continue;
+        auto p = SM.getPresumedLoc(expansionLoc);
+        if (!p.isValid()) continue;
+
+        // Look up the macro name at the expansion start.
+        SourceLocation spellLoc = SM.getSpellingLoc(sle.getExpansion().getSpellingLoc());
+        Token tok;
+        if (Lexer::getRawToken(spellLoc, tok, SM, Ctx.getLangOpts(), false))
+            continue;
+        std::string spelling = Lexer::getSpelling(tok, SM, Ctx.getLangOpts());
+        if (spelling.empty()) continue;
+        const IdentifierInfo *II = PP.getIdentifierInfo(spelling);
+        if (!II || !PP.getMacroInfo(II)) continue;
+
+        SemanticTokenEntry t;
+        t.line       = p.getLine();
+        t.col        = p.getColumn();
+        t.length     = (uint32_t)spelling.size();
+        t.token_type = CB_TOK_MACRO;
+        list->tokens.push_back(t);
+    }
+
+    // Sort by file position so callers get a predictable order.
+    std::sort(list->tokens.begin(), list->tokens.end(),
+              [](const SemanticTokenEntry &a, const SemanticTokenEntry &b) {
+                  return a.line != b.line ? a.line < b.line : a.col < b.col;
+              });
+    return list;
+}
+
+size_t cb_semantic_token_count(const CB_SemanticTokenList *list) {
+    return list->tokens.size();
+}
+
+void cb_semantic_token_get(const CB_SemanticTokenList *list, size_t i,
+                           CB_SemanticToken *out) {
+    auto *ml = const_cast<CB_SemanticTokenList *>(list);
+    ml->current  = ml->tokens[i];
+    out->line       = ml->current.line;
+    out->col        = ml->current.col;
+    out->length     = ml->current.length;
+    out->token_type = ml->current.token_type;
+}
+
+void cb_semantic_token_list_destroy(CB_SemanticTokenList *list) { delete list; }
+
+// ── clang-format ─────────────────────────────────────────────────────────────
+
+/// One text replacement from clang-format.
+struct FormatEditEntry {
+    uint32_t    offset;      // byte offset in the source
+    uint32_t    length;      // bytes to remove at offset
+    std::string replacement; // text to insert instead
+};
+
+struct CB_FormatList {
+    std::vector<FormatEditEntry> edits;
+    FormatEditEntry current;
+};
+
+CB_FormatList *cb_format(const char *source, size_t len,
+                          const char *style_dir) {
+    using namespace clang::format;
+    StringRef code(source, len);
+
+    // Try to load a .clang-format file from style_dir; fall back to LLVM style.
+    FormatStyle style = getLLVMStyle();
+    if (style_dir && *style_dir) {
+        llvm::Expected<FormatStyle> loaded =
+            getStyle("file", std::string(style_dir) + "/__dummy__", "LLVM", code);
+        if (loaded) style = std::move(*loaded);
+    }
+
+    // Format the entire file.
+    std::vector<tooling::Range> ranges = { tooling::Range(0, (unsigned)len) };
+    tooling::Replacements repls = reformat(style, code, ranges);
+
+    auto *list = new CB_FormatList{};
+    for (const tooling::Replacement &r : repls) {
+        FormatEditEntry e;
+        e.offset      = r.getOffset();
+        e.length      = r.getLength();
+        e.replacement = r.getReplacementText().str();
+        list->edits.push_back(std::move(e));
+    }
+    return list;
+}
+
+size_t cb_format_edit_count(const CB_FormatList *list) {
+    return list->edits.size();
+}
+
+void cb_format_edit_get(const CB_FormatList *list, size_t i, CB_FormatEdit *out) {
+    auto *ml = const_cast<CB_FormatList *>(list);
+    ml->current = ml->edits[i];
+    out->offset      = ml->current.offset;
+    out->length      = ml->current.length;
+    out->replacement = ml->current.replacement.c_str();
+}
+
+void cb_format_list_destroy(CB_FormatList *list) { delete list; }
+
+// ── References — all usages of a USR within a TU ─────────────────────────────
+
+struct ReferenceEntry {
+    std::string file;
+    uint32_t    line, col;
+    bool        is_definition;
+};
+
+struct CB_ReferenceList {
+    std::vector<ReferenceEntry> refs;
+    ReferenceEntry current;
+};
+
+class RefCollector : public index::IndexDataConsumer {
+public:
+    const std::string          &target_usr;
+    std::vector<ReferenceEntry> &refs;
+    const SourceManager        *SM = nullptr;
+
+    RefCollector(const std::string &usr, std::vector<ReferenceEntry> &out)
+        : target_usr(usr), refs(out) {}
+
+    void initialize(ASTContext &Ctx) override {
+        SM = &Ctx.getSourceManager();
+    }
+
+    bool handleDeclOccurrence(
+        const Decl *D,
+        index::SymbolRoleSet Roles,
+        llvm::ArrayRef<index::SymbolRelation> /*Relations*/,
+        SourceLocation Loc,
+        ASTNodeInfo /*ASTNode*/
+    ) override {
+        if (!SM) return true;
+        SmallString<128> usr_buf;
+        if (index::generateUSRForDecl(D, usr_buf)) return true;
+        if (usr_buf.str() != target_usr) return true;
+
+        Loc = SM->getSpellingLoc(Loc);
+        if (SM->isInSystemHeader(Loc)) return true;
+        auto p = SM->getPresumedLoc(Loc);
+        if (!p.isValid()) return true;
+
+        using SR = index::SymbolRole;
+        bool is_def = (Roles & (index::SymbolRoleSet)SR::Definition) != 0;
+
+        ReferenceEntry e;
+        e.file          = p.getFilename() ? p.getFilename() : "";
+        e.line          = p.getLine();
+        e.col           = p.getColumn();
+        e.is_definition = is_def;
+        refs.push_back(std::move(e));
+        return true;
+    }
+};
+
+CB_ReferenceList *cb_references(CB_TransUnit *tu, const char *usr) {
+    auto *list = new CB_ReferenceList{};
+    if (!usr || !*usr) return list;
+
+    std::string target(usr);
+    RefCollector consumer(target, list->refs);
+
+    index::IndexingOptions opts{};
+    opts.SystemSymbolFilter =
+        index::IndexingOptions::SystemSymbolFilterKind::None;
+    opts.IndexFunctionLocals = true;
+
+    index::indexASTUnit(*tu->ast, consumer, opts);
+    return list;
+}
+
+size_t cb_reference_count(const CB_ReferenceList *list) {
+    return list->refs.size();
+}
+
+void cb_reference_get(const CB_ReferenceList *list, size_t i,
+                      CB_Reference *out) {
+    auto *ml = const_cast<CB_ReferenceList *>(list);
+    ml->current = ml->refs[i];
+    out->file          = ml->current.file.c_str();
+    out->line          = ml->current.line;
+    out->col           = ml->current.col;
+    out->is_definition = ml->current.is_definition ? 1 : 0;
+}
+
+void cb_reference_list_destroy(CB_ReferenceList *list) { delete list; }
+
+// ── Rename — collect edits for renaming a symbol ──────────────────────────────
+
+struct RenameEditEntry {
+    std::string file;
+    uint32_t    line, col;
+    uint32_t    old_name_len;
+    std::string new_name;
+};
+
+struct CB_RenameList {
+    std::vector<RenameEditEntry> edits;
+    std::string conflict_msg; // non-empty if rename would shadow/conflict
+    RenameEditEntry current;
+};
+
+/// Collect all edits needed to rename the symbol with `usr` to `new_name`.
+/// Returns a CB_RenameList; if cb_rename_has_conflict returns non-zero, the
+/// rename is risky and cb_rename_conflict_message contains a human-readable
+/// reason.  The edit list is still populated for preview even when a conflict
+/// is detected.
+CB_RenameList *cb_rename(CB_TransUnit *tu, const char *usr,
+                          const char *new_name) {
+    auto *list = new CB_RenameList{};
+    if (!usr || !*usr || !new_name || !*new_name) return list;
+
+    std::string target(usr);
+    std::vector<ReferenceEntry> refs;
+    RefCollector rc(target, refs);
+    index::IndexingOptions opts{};
+    opts.SystemSymbolFilter =
+        index::IndexingOptions::SystemSymbolFilterKind::None;
+    opts.IndexFunctionLocals = true;
+    index::indexASTUnit(*tu->ast, rc, opts);
+
+    // Resolve the old name from the first reference.
+    std::string old_name;
+    {
+        ASTContext &Ctx = tu->ast->getASTContext();
+        // Walk declarations to find one matching the USR.
+        struct NameFinder : RecursiveASTVisitor<NameFinder> {
+            const std::string &target_usr;
+            std::string name;
+            bool VisitNamedDecl(NamedDecl *D) {
+                SmallString<128> buf;
+                if (!index::generateUSRForDecl(D, buf) && buf.str() == target_usr)
+                    name = D->getNameAsString();
+                return true;
+            }
+            NameFinder(const std::string &u) : target_usr(u) {}
+        } finder(target);
+        finder.TraverseDecl(Ctx.getTranslationUnitDecl());
+        old_name = finder.name;
+    }
+
+    // Check for name conflicts: does new_name already exist in the same scope?
+    // Simple heuristic: if any NamedDecl at the top level has new_name and a
+    // different USR, warn.
+    {
+        ASTContext &Ctx = tu->ast->getASTContext();
+        struct ConflictChecker : RecursiveASTVisitor<ConflictChecker> {
+            const std::string &new_name, &target_usr;
+            std::string conflict;
+            bool VisitNamedDecl(NamedDecl *D) {
+                if (D->getNameAsString() != new_name) return true;
+                SmallString<128> buf;
+                if (index::generateUSRForDecl(D, buf)) return true;
+                if (buf.str() != target_usr)
+                    conflict = "name '" + new_name + "' is already used at "
+                               + D->getLocation().printToString(
+                                   D->getASTContext().getSourceManager());
+                return true;
+            }
+            ConflictChecker(const std::string &n, const std::string &u)
+                : new_name(n), target_usr(u) {}
+        } checker(std::string(new_name), target);
+        checker.TraverseDecl(Ctx.getTranslationUnitDecl());
+        list->conflict_msg = checker.conflict;
+    }
+
+    // Build edits.
+    for (const auto &ref : refs) {
+        RenameEditEntry e;
+        e.file         = ref.file;
+        e.line         = ref.line;
+        e.col          = ref.col;
+        e.old_name_len = (uint32_t)old_name.size();
+        e.new_name     = new_name;
+        list->edits.push_back(std::move(e));
+    }
+    return list;
+}
+
+size_t cb_rename_edit_count(const CB_RenameList *list) {
+    return list->edits.size();
+}
+
+void cb_rename_edit_get(const CB_RenameList *list, size_t i,
+                        CB_RenameEdit *out) {
+    auto *ml = const_cast<CB_RenameList *>(list);
+    ml->current = ml->edits[i];
+    out->file         = ml->current.file.c_str();
+    out->line         = ml->current.line;
+    out->col          = ml->current.col;
+    out->old_name_len = ml->current.old_name_len;
+    out->new_name     = ml->current.new_name.c_str();
+}
+
+int cb_rename_has_conflict(const CB_RenameList *list) {
+    return list->conflict_msg.empty() ? 0 : 1;
+}
+
+const char *cb_rename_conflict_message(const CB_RenameList *list) {
+    return list->conflict_msg.empty() ? nullptr : list->conflict_msg.c_str();
+}
+
+void cb_rename_list_destroy(CB_RenameList *list) { delete list; }

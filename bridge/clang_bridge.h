@@ -176,6 +176,152 @@ size_t      cb_sig_help_param_count(const CB_SigHelp *sh, size_t overload_i);
 const char *cb_sig_help_param_label(CB_SigHelp *sh, size_t overload_i, size_t param_i);
 void        cb_sig_help_destroy(CB_SigHelp *sh);
 
+// ── Parse failure message ─────────────────────────────────────────────────────
+
+/// Returns a human-readable error string from the last failed cb_parse or
+/// cb_parse_unsaved call, or NULL if the last parse succeeded.
+/// Pointer is owned by the index; do not free.
+const char *cb_index_last_error(const CB_Index *idx);
+
+// ── Parse from memory ─────────────────────────────────────────────────────────
+
+/// Parse `contents` (length `len`) as if it were the file at `virtual_path`.
+/// Useful for LSP servers where the editor holds unsaved edits.
+/// Returns NULL on failure; call cb_index_last_error for details.
+/// Caller must free with cb_transunit_destroy().
+CB_TransUnit *cb_parse_unsaved(
+    CB_Index   *idx,
+    const char *virtual_path,
+    const char *contents,
+    size_t      len,
+    const char * const *args,
+    size_t      nargs
+);
+
+// ── #include graph ────────────────────────────────────────────────────────────
+
+typedef struct {
+    const char *including_file; // file that contains the directive
+    const char *included_file;  // resolved path of the included header
+    uint32_t    line;           // 1-based line of the #include directive
+    uint32_t    start_col;      // 1-based column of the opening quote/angle
+    uint32_t    end_col;        // 1-based column past the closing quote/angle
+} CB_Inclusion;
+
+typedef struct CB_InclusionList CB_InclusionList;
+
+/// Collect all #include directives recorded in the TU.
+/// Maps to LSP textDocument/documentLink.
+/// Caller must free with cb_inclusion_list_destroy().
+CB_InclusionList *cb_inclusions(CB_TransUnit *tu);
+size_t            cb_inclusion_count(const CB_InclusionList *list);
+/// Fills *out; string pointers valid until next call to cb_inclusion_get or destroy.
+void              cb_inclusion_get(const CB_InclusionList *list, size_t i, CB_Inclusion *out);
+void              cb_inclusion_list_destroy(CB_InclusionList *list);
+
+// ── Semantic tokens ───────────────────────────────────────────────────────────
+
+/// Token type constants (compatible with LSP SemanticTokenTypes).
+#define CB_TOK_NAMESPACE   0
+#define CB_TOK_TYPE        1
+#define CB_TOK_FUNCTION    2
+#define CB_TOK_METHOD      3
+#define CB_TOK_PROPERTY    4
+#define CB_TOK_VARIABLE    5
+#define CB_TOK_PARAMETER   6
+#define CB_TOK_ENUM_MEMBER 7
+#define CB_TOK_MACRO       8
+
+typedef struct {
+    uint32_t line;       // 1-based
+    uint32_t col;        // 1-based
+    uint32_t length;     // name length in characters
+    uint8_t  token_type; // CB_TOK_* constant above
+} CB_SemanticToken;
+
+typedef struct CB_SemanticTokenList CB_SemanticTokenList;
+
+/// Classify every named identifier in the TU. Results are sorted by
+/// (line, col). Maps to LSP textDocument/semanticTokens/full.
+/// Caller must free with cb_semantic_token_list_destroy().
+CB_SemanticTokenList *cb_semantic_tokens(CB_TransUnit *tu);
+size_t                cb_semantic_token_count(const CB_SemanticTokenList *list);
+/// Fills *out; valid until next call or destroy.
+void                  cb_semantic_token_get(const CB_SemanticTokenList *list,
+                                            size_t i, CB_SemanticToken *out);
+void                  cb_semantic_token_list_destroy(CB_SemanticTokenList *list);
+
+// ── clang-format ─────────────────────────────────────────────────────────────
+
+typedef struct {
+    uint32_t    offset;      // byte offset in the source buffer
+    uint32_t    length;      // bytes to delete at offset
+    const char *replacement; // text to insert (may be empty = pure deletion)
+} CB_FormatEdit;
+
+typedef struct CB_FormatList CB_FormatList;
+
+/// Format `source` (length `len`) using the .clang-format file found by
+/// walking up from `style_dir` (pass NULL to use LLVM style).
+/// Returns a list of non-overlapping text replacements. Apply in reverse-offset
+/// order so earlier edits don't shift later offsets.
+/// Maps to LSP textDocument/formatting.
+/// Caller must free with cb_format_list_destroy().
+CB_FormatList *cb_format(const char *source, size_t len, const char *style_dir);
+size_t         cb_format_edit_count(const CB_FormatList *list);
+/// Fills *out; replacement pointer valid until next call or destroy.
+void           cb_format_edit_get(const CB_FormatList *list, size_t i, CB_FormatEdit *out);
+void           cb_format_list_destroy(CB_FormatList *list);
+
+// ── References ────────────────────────────────────────────────────────────────
+
+typedef struct {
+    const char *file;          // source file path
+    uint32_t    line;          // 1-based
+    uint32_t    col;           // 1-based
+    int         is_definition; // 1 if this occurrence is the definition site
+} CB_Reference;
+
+typedef struct CB_ReferenceList CB_ReferenceList;
+
+/// Find all occurrences of the symbol identified by `usr` within `tu`.
+/// `usr` is a Clang Unified Symbol Reference string (from cb_symbol_usr).
+/// Maps to LSP textDocument/references.
+/// Caller must free with cb_reference_list_destroy().
+CB_ReferenceList *cb_references(CB_TransUnit *tu, const char *usr);
+size_t            cb_reference_count(const CB_ReferenceList *list);
+/// Fills *out; file pointer valid until next call or destroy.
+void              cb_reference_get(const CB_ReferenceList *list, size_t i, CB_Reference *out);
+void              cb_reference_list_destroy(CB_ReferenceList *list);
+
+// ── Rename ────────────────────────────────────────────────────────────────────
+
+typedef struct {
+    const char *file;         // source file containing this occurrence
+    uint32_t    line;         // 1-based
+    uint32_t    col;          // 1-based; start of the old name
+    uint32_t    old_name_len; // byte length of the name to replace
+    const char *new_name;     // replacement text
+} CB_RenameEdit;
+
+typedef struct CB_RenameList CB_RenameList;
+
+/// Collect all edits needed to rename the symbol with `usr` to `new_name`.
+/// cb_rename_has_conflict returns 1 when the new name would shadow or conflict
+/// with an existing declaration; cb_rename_conflict_message gives the reason.
+/// The edit list is still filled even when a conflict is detected (for preview).
+/// Maps to LSP textDocument/rename and textDocument/prepareRename.
+/// Caller must free with cb_rename_list_destroy().
+CB_RenameList *cb_rename(CB_TransUnit *tu, const char *usr, const char *new_name);
+size_t         cb_rename_edit_count(const CB_RenameList *list);
+/// Fills *out; pointer fields valid until next call or destroy.
+void           cb_rename_edit_get(const CB_RenameList *list, size_t i, CB_RenameEdit *out);
+/// Returns 1 when the rename conflicts with an existing declaration.
+int            cb_rename_has_conflict(const CB_RenameList *list);
+/// Returns a human-readable conflict message, or NULL when there is no conflict.
+const char    *cb_rename_conflict_message(const CB_RenameList *list);
+void           cb_rename_list_destroy(CB_RenameList *list);
+
 // ── Inlay hints ───────────────────────────────────────────────────────────────
 
 typedef struct {
