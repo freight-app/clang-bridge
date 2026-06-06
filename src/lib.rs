@@ -3,8 +3,10 @@ mod ffi;
 pub mod completion;
 pub mod diag;
 pub mod doc;
+pub mod docsym;
 pub mod goto;
 pub mod hover;
+pub mod sighelp;
 pub mod symbol;
 
 use std::ffi::CString;
@@ -68,6 +70,16 @@ impl TranslationUnit {
         } else {
             Some(symbol::Symbol(sym))
         }
+    }
+
+    /// Return the flat document symbol list for this TU.
+    ///
+    /// The list is ordered by source position. Each entry carries a `parent`
+    /// index into the same list (-1 = top-level), so callers can reconstruct
+    /// the nesting tree. Maps to LSP `textDocument/documentSymbol`.
+    pub fn document_symbols(&self) -> Option<docsym::DocSymList> {
+        let ptr = unsafe { ffi::cb_document_symbols(self.0) };
+        docsym::DocSymList::from_raw(ptr)
     }
 
     /// Reparse the translation unit with an optional in-memory replacement for
