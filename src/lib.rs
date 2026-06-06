@@ -2,6 +2,7 @@ mod ffi;
 
 pub mod completion;
 pub mod diag;
+pub mod tidy;
 pub mod doc;
 pub mod docsym;
 pub mod format;
