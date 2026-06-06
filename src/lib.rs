@@ -1,7 +1,10 @@
 mod ffi;
 
+pub mod completion;
 pub mod diag;
 pub mod doc;
+pub mod goto;
+pub mod hover;
 pub mod symbol;
 pub mod tidy;
 

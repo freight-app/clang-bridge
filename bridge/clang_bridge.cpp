@@ -342,7 +342,240 @@ void        cb_symbol_destroy(CB_Symbol *s)         { delete s; }
 // Invokes the clang-tidy binary and parses its line-based warning output.
 // Format: "file:line:col: severity: message [check-name]"
 
+#include <clang/Frontend/FrontendActions.h>
+#include <clang/Sema/CodeCompleteConsumer.h>
+#include <clang/Sema/Sema.h>
 #include <cstdio>
+
+// ── Free helpers ──────────────────────────────────────────────────────────────
+
+void cb_free_string(char *s) { free(s); }
+
+// ── Reparse ───────────────────────────────────────────────────────────────────
+
+int cb_transunit_reparse(CB_TransUnit *tu, const char *buf, size_t len) {
+    std::vector<ASTUnit::RemappedFile> remapped;
+    std::unique_ptr<llvm::MemoryBuffer> owned_buf;
+    if (buf && len > 0) {
+        StringRef main = tu->ast->getMainFileName();
+        owned_buf = llvm::MemoryBuffer::getMemBufferCopy(StringRef(buf, len), main);
+        remapped.emplace_back(main.str(), owned_buf.get());
+    }
+    return tu->ast->Reparse(std::make_shared<PCHContainerOperations>(),
+                            remapped) ? 0 : 1;
+}
+
+// ── Hover markdown ────────────────────────────────────────────────────────────
+
+char *cb_hover_markdown(CB_TransUnit *tu, uint32_t line, uint32_t col) {
+    ASTContext &Ctx = tu->ast->getASTContext();
+    SymbolLocator loc(Ctx, line, col);
+    loc.TraverseDecl(Ctx.getTranslationUnitDecl());
+    const NamedDecl *ND = loc.found;
+    if (!ND) return nullptr;
+
+    std::string sig = prettySignature(ND, Ctx);
+    std::string brief;
+    const RawComment *RC = Ctx.getRawCommentForDeclNoCache(ND);
+    if (RC) {
+        std::string full = RC->getFormattedText(Ctx.getSourceManager(), Ctx.getDiagnostics());
+        std::istringstream ss(full);
+        std::string l;
+        while (std::getline(ss, l)) {
+            size_t s = l.find_first_not_of(" \t\r\n");
+            if (s == std::string::npos) continue;
+            brief = l.substr(s);
+            break;
+        }
+    }
+
+    std::string md;
+    if (!sig.empty()) {
+        md += "```cpp\n";
+        md += sig;
+        md += "\n```";
+    }
+    if (!brief.empty()) {
+        if (!md.empty()) md += "\n\n";
+        md += brief;
+    }
+    if (md.empty()) return nullptr;
+    return strdup(md.c_str());
+}
+
+// ── Go-to-definition ──────────────────────────────────────────────────────────
+
+int cb_goto_definition(CB_TransUnit *tu, uint32_t line, uint32_t col,
+                       CB_Location *out) {
+    ASTContext &Ctx = tu->ast->getASTContext();
+    SymbolLocator loc(Ctx, line, col);
+    loc.TraverseDecl(Ctx.getTranslationUnitDecl());
+    const NamedDecl *ND = loc.found;
+    if (!ND) return 0;
+
+    // Prefer the definition over the declaration
+    const NamedDecl *target = ND;
+    if (auto *FD = dyn_cast<FunctionDecl>(ND))
+        if (auto *Def = FD->getDefinition()) target = Def;
+
+    auto ploc = Ctx.getSourceManager().getPresumedLoc(target->getLocation());
+    if (!ploc.isValid()) return 0;
+
+    out->file = strdup(ploc.getFilename() ? ploc.getFilename() : "");
+    out->line = (uint32_t)ploc.getLine();
+    out->col  = (uint32_t)ploc.getColumn();
+    return 1;
+}
+
+// ── Code completion ───────────────────────────────────────────────────────────
+
+struct CompletionEntry {
+    std::string label;
+    uint8_t     kind;   // LSP CompletionItemKind
+    std::string detail;
+    std::string documentation;
+};
+
+// Map CXCursorKind-equivalent to LSP CompletionItemKind
+static uint8_t lspKindFor(CodeCompletionResult::ResultKind rk,
+                           CXCursorKind ck) {
+    if (rk == CodeCompletionResult::RK_Keyword)  return 14; // Keyword
+    if (rk == CodeCompletionResult::RK_Macro)    return 15; // Snippet-ish, use Text
+    switch (ck) {
+        case CXCursor_FunctionDecl:
+        case CXCursor_CXXMethod:
+        case CXCursor_FunctionTemplate:  return 3;  // Function
+        case CXCursor_Constructor:       return 4;  // Constructor
+        case CXCursor_FieldDecl:         return 5;  // Field
+        case CXCursor_VarDecl:
+        case CXCursor_ParmDecl:          return 6;  // Variable
+        case CXCursor_ClassDecl:
+        case CXCursor_StructDecl:
+        case CXCursor_ClassTemplate:     return 7;  // Class
+        case CXCursor_EnumDecl:          return 13; // Enum
+        case CXCursor_EnumConstantDecl:  return 20; // EnumMember
+        case CXCursor_Namespace:         return 9;  // Module
+        case CXCursor_TypedefDecl:
+        case CXCursor_TypeAliasDecl:     return 25; // TypeParameter (closest)
+        default:                         return 1;  // Text
+    }
+}
+
+class BridgeCodeCompleteConsumer : public CodeCompleteConsumer {
+public:
+    std::shared_ptr<GlobalCodeCompletionAllocator> Alloc;
+    CodeCompletionTUInfo TUInfo;
+    std::vector<CompletionEntry> results;
+
+    BridgeCodeCompleteConsumer()
+        : CodeCompleteConsumer(CodeCompleteOptions()),
+          Alloc(std::make_shared<GlobalCodeCompletionAllocator>()),
+          TUInfo(Alloc) {}
+
+    CodeCompletionAllocator &getAllocator() override { return *Alloc; }
+    CodeCompletionTUInfo &getCodeCompletionTUInfo() override { return TUInfo; }
+
+    void ProcessCodeCompleteResults(Sema &S,
+                                    CodeCompletionContext ctx,
+                                    CodeCompletionResult *Results,
+                                    unsigned NumResults) override {
+        for (unsigned i = 0; i < NumResults; ++i) {
+            auto &R = Results[i];
+            if (R.Availability == CXAvailability_NotAvailable) continue;
+
+            CompletionEntry e;
+            e.kind = lspKindFor(R.Kind, R.CursorKind);
+
+            if (R.Kind == CodeCompletionResult::RK_Keyword) {
+                e.label = R.Keyword;
+            } else if (R.Kind == CodeCompletionResult::RK_Macro) {
+                e.label = R.Macro->getName().str();
+            } else {
+                CodeCompletionString *CCS = nullptr;
+                if (R.Kind == CodeCompletionResult::RK_Pattern) {
+                    CCS = R.Pattern;
+                } else {
+                    CCS = R.CreateCodeCompletionString(
+                        S, ctx, *Alloc, TUInfo,
+                        /*IncludeBriefComments=*/true);
+                }
+                if (!CCS) continue;
+                for (auto &chunk : *CCS) {
+                    if (chunk.Kind == CodeCompletionString::CK_TypedText)
+                        e.label = chunk.Text ? chunk.Text : "";
+                    else if (chunk.Kind == CodeCompletionString::CK_ResultType)
+                        e.detail = chunk.Text ? chunk.Text : "";
+                }
+                if (const char *brief = CCS->getBriefComment())
+                    e.documentation = brief;
+            }
+            if (e.label.empty()) continue;
+            results.push_back(std::move(e));
+        }
+    }
+};
+
+struct CB_CompletionIter {
+    std::vector<CompletionEntry> entries;
+    size_t pos = 0;
+    CompletionEntry current;
+};
+
+CB_CompletionIter *cb_complete(CB_TransUnit *tu,
+                                uint32_t line, uint32_t col,
+                                const char *unsaved_buf, size_t unsaved_len) {
+    auto *it = new CB_CompletionIter{};
+
+    auto consumer = std::make_unique<BridgeCodeCompleteConsumer>();
+    BridgeCodeCompleteConsumer *consumerPtr = consumer.get();
+
+    StringRef main_file = tu->ast->getMainFileName();
+
+    std::vector<ASTUnit::RemappedFile> remapped;
+    std::unique_ptr<llvm::MemoryBuffer> owned_buf;
+    if (unsaved_buf && unsaved_len > 0) {
+        owned_buf = llvm::MemoryBuffer::getMemBufferCopy(
+            StringRef(unsaved_buf, unsaved_len), main_file);
+        remapped.emplace_back(main_file.str(), owned_buf.get());
+    }
+
+    SmallVector<StoredDiagnostic, 4> stored_diags;
+    SmallVector<const llvm::MemoryBuffer *, 4> owned_buffers;
+
+    LangOptions lang_opts = tu->ast->getASTContext().getLangOpts();
+
+    tu->ast->CodeComplete(
+        main_file.str(), line, col,
+        remapped,
+        /*IncludeMacros=*/true,
+        /*IncludeCodePatterns=*/false,
+        /*IncludeBriefComments=*/true,
+        *consumer,
+        std::make_shared<PCHContainerOperations>(),
+        tu->ast->getDiagnosticsPtr(),
+        lang_opts,
+        tu->ast->getSourceManagerPtr(),
+        tu->ast->getFileManagerPtr(),
+        stored_diags,
+        owned_buffers,
+        /*Act=*/nullptr
+    );
+
+    it->entries = std::move(consumerPtr->results);
+    return it;
+}
+
+int cb_completion_next(CB_CompletionIter *it, CB_CompletionItem *out) {
+    if (it->pos >= it->entries.size()) return 0;
+    it->current = it->entries[it->pos++];
+    out->label         = it->current.label.c_str();
+    out->kind          = it->current.kind;
+    out->detail        = it->current.detail.empty()   ? nullptr : it->current.detail.c_str();
+    out->documentation = it->current.documentation.empty() ? nullptr : it->current.documentation.c_str();
+    return 1;
+}
+
+void cb_completion_iter_destroy(CB_CompletionIter *it) { delete it; }
 
 struct CB_TidyIter {
     std::vector<DiagEntry> entries;

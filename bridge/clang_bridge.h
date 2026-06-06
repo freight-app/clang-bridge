@@ -79,6 +79,57 @@ CB_DiagIter *cb_diag_iter(CB_TransUnit *tu);
 int          cb_diag_next(CB_DiagIter *it, CB_Diag *out);
 void         cb_diag_iter_destroy(CB_DiagIter *it);
 
+// ── Free helpers ─────────────────────────────────────────────────────────────
+
+/// Free a string returned by cb_hover_markdown or other heap-allocating APIs.
+void cb_free_string(char *s);
+
+// ── Reparse (unsaved buffer) ──────────────────────────────────────────────────
+
+/// Reparse the TU with an in-memory replacement for its main file.
+/// Pass buf=NULL/len=0 to reparse from disk.  Returns 1 on success.
+int cb_transunit_reparse(CB_TransUnit *tu,
+                         const char *buf, size_t len);
+
+// ── Hover markdown ────────────────────────────────────────────────────────────
+
+/// Return an LSP-ready markdown string for the symbol at (line, col), or NULL.
+/// Caller must free the result with cb_free_string().
+char *cb_hover_markdown(CB_TransUnit *tu, uint32_t line, uint32_t col);
+
+// ── Go-to-definition ──────────────────────────────────────────────────────────
+
+typedef struct {
+    char     *file;   // heap-allocated; free with cb_free_string()
+    uint32_t  line;   // 1-based
+    uint32_t  col;    // 1-based
+} CB_Location;
+
+/// Fills *out and returns 1 if a definition location is found, 0 otherwise.
+/// Caller must free out->file with cb_free_string().
+int cb_goto_definition(CB_TransUnit *tu, uint32_t line, uint32_t col,
+                       CB_Location *out);
+
+// ── Code completion ───────────────────────────────────────────────────────────
+
+typedef struct {
+    const char *label;          // typed text / identifier
+    uint8_t     kind;           // LSP CompletionItemKind (1-25)
+    const char *detail;         // return type + signature excerpt
+    const char *documentation;  // brief doc comment (may be NULL)
+} CB_CompletionItem;
+
+typedef struct CB_CompletionIter CB_CompletionIter;
+
+/// Run code-complete at (line, col) with an optional in-memory replacement for
+/// the main file (unsaved_buf/unsaved_len; pass NULL/0 to use on-disk content).
+CB_CompletionIter *cb_complete(CB_TransUnit *tu,
+                               uint32_t line, uint32_t col,
+                               const char *unsaved_buf, size_t unsaved_len);
+/// Returns 1 and fills *out (pointers valid until next call or destroy).
+int  cb_completion_next(CB_CompletionIter *it, CB_CompletionItem *out);
+void cb_completion_iter_destroy(CB_CompletionIter *it);
+
 // ── clang-tidy (subprocess) ───────────────────────────────────────────────────
 //
 // Invokes the `clang-tidy` binary as a subprocess (--export-fixes=-) and

@@ -9,6 +9,22 @@ use std::ffi::c_char;
 #[repr(C)] pub struct CB_DiagIter(());
 #[repr(C)] pub struct CB_Symbol(());
 #[repr(C)] pub struct CB_TidyIter(());
+#[repr(C)] pub struct CB_CompletionIter(());
+
+#[repr(C)]
+pub struct CB_Location {
+    pub file: *mut std::ffi::c_char,
+    pub line: u32,
+    pub col:  u32,
+}
+
+#[repr(C)]
+pub struct CB_CompletionItem {
+    pub label:         *const c_char,
+    pub kind:          u8,
+    pub detail:        *const c_char,
+    pub documentation: *const c_char,
+}
 
 #[repr(C)]
 pub struct CB_DocItem {
@@ -67,4 +83,28 @@ extern "C" {
                        nargs: usize) -> *mut CB_TidyIter;
     pub fn cb_tidy_next(it: *mut CB_TidyIter, out: *mut CB_Diag) -> i32;
     pub fn cb_tidy_iter_destroy(it: *mut CB_TidyIter);
+
+    // Free helpers
+    pub fn cb_free_string(s: *mut c_char);
+
+    // Reparse
+    pub fn cb_transunit_reparse(tu: *mut CB_TransUnit,
+                                buf: *const c_char, len: usize) -> i32;
+
+    // Hover markdown
+    pub fn cb_hover_markdown(tu: *mut CB_TransUnit,
+                             line: u32, col: u32) -> *mut c_char;
+
+    // Go-to-definition
+    pub fn cb_goto_definition(tu: *mut CB_TransUnit, line: u32, col: u32,
+                              out: *mut CB_Location) -> i32;
+
+    // Code completion
+    pub fn cb_complete(tu: *mut CB_TransUnit,
+                       line: u32, col: u32,
+                       unsaved_buf: *const c_char, unsaved_len: usize)
+                       -> *mut CB_CompletionIter;
+    pub fn cb_completion_next(it: *mut CB_CompletionIter,
+                              out: *mut CB_CompletionItem) -> i32;
+    pub fn cb_completion_iter_destroy(it: *mut CB_CompletionIter);
 }
