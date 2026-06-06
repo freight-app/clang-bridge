@@ -1,10 +1,10 @@
-use std::ffi::{CStr, CString};
 use crate::ffi;
+use std::ffi::{CStr, CString};
 
 pub struct CompletionItem {
-    pub label:         String,
-    pub kind:          u8,
-    pub detail:        Option<String>,
+    pub label: String,
+    pub kind: u8,
+    pub detail: Option<String>,
     pub documentation: Option<String>,
 }
 
@@ -19,27 +19,42 @@ impl CompletionIter {
             documentation: std::ptr::null(),
         };
         let ok = unsafe { ffi::cb_completion_next(self.0, &mut out) };
-        if ok == 0 { return None; }
+        if ok == 0 {
+            return None;
+        }
         let label = unsafe { cstr_opt(out.label).unwrap_or_default() };
         let detail = unsafe { cstr_opt(out.detail) };
         let documentation = unsafe { cstr_opt(out.documentation) };
-        Some(CompletionItem { label, kind: out.kind, detail, documentation })
+        Some(CompletionItem {
+            label,
+            kind: out.kind,
+            detail,
+            documentation,
+        })
     }
 }
 
 impl Iterator for CompletionIter {
     type Item = CompletionItem;
-    fn next(&mut self) -> Option<Self::Item> { self.current_item() }
+    fn next(&mut self) -> Option<Self::Item> {
+        self.current_item()
+    }
 }
 
 impl Drop for CompletionIter {
-    fn drop(&mut self) { unsafe { ffi::cb_completion_iter_destroy(self.0) } }
+    fn drop(&mut self) {
+        unsafe { ffi::cb_completion_iter_destroy(self.0) }
+    }
 }
 
 unsafe impl Send for CompletionIter {}
 
 unsafe fn cstr_opt(p: *const std::ffi::c_char) -> Option<String> {
-    if p.is_null() { None } else { Some(CStr::from_ptr(p).to_string_lossy().into_owned()) }
+    if p.is_null() {
+        None
+    } else {
+        Some(CStr::from_ptr(p).to_string_lossy().into_owned())
+    }
 }
 
 /// Run code completion at (line, col).  Pass `unsaved` to supply in-memory

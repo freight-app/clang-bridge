@@ -1,6 +1,9 @@
 use std::process::Command;
 
 fn main() {
+    println!("cargo:rerun-if-env-changed=CLANG_BRIDGE_CLANGXX");
+    println!("cargo:rerun-if-env-changed=CLANG_BRIDGE_LLVM_CONFIG");
+
     // Find the best available clang++ version (prefer 22, fall back to 21).
     let cxx = find_clangxx();
 
@@ -8,6 +11,7 @@ fn main() {
     let llvm_config = find_llvm_config();
     let include_flags = llvm_config_flags(&llvm_config, "--cxxflags");
     let lib_flags = llvm_config_flags(&llvm_config, "--ldflags");
+    let lib_dir = llvm_config_output(&llvm_config, "--libdir");
 
     cc::Build::new()
         .cpp(true)
@@ -33,18 +37,23 @@ fn main() {
             println!("cargo:rustc-link-search=native={}", &f[2..]);
         }
     }
+    if let Some(dir) = lib_dir.as_deref().filter(|s| !s.is_empty()) {
+        println!("cargo:rustc-link-search=native={dir}");
+    }
     println!("cargo:rustc-link-lib=dylib=clang-cpp");
     println!("cargo:rustc-link-lib=dylib=LLVM");
     println!("cargo:rustc-link-lib=dylib=stdc++");
-    // clang-tidy is only available as a static lib on most distros
-    println!("cargo:rustc-link-search=native=/usr/lib/llvm-22/lib");
-    println!("cargo:rustc-link-search=native=/usr/lib");
 
     println!("cargo:rerun-if-changed=bridge/clang_bridge.cpp");
     println!("cargo:rerun-if-changed=bridge/clang_bridge.h");
 }
 
 fn find_clangxx() -> String {
+    if let Ok(path) = std::env::var("CLANG_BRIDGE_CLANGXX") {
+        if !path.is_empty() {
+            return path;
+        }
+    }
     for candidate in ["clang++-22", "clang++-21", "clang++"] {
         if Command::new(candidate).arg("--version").output().is_ok() {
             return candidate.to_string();
@@ -54,6 +63,11 @@ fn find_clangxx() -> String {
 }
 
 fn find_llvm_config() -> String {
+    if let Ok(path) = std::env::var("CLANG_BRIDGE_LLVM_CONFIG") {
+        if !path.is_empty() {
+            return path;
+        }
+    }
     for candidate in ["llvm-config-22", "llvm-config-21", "llvm-config"] {
         if Command::new(candidate).arg("--version").output().is_ok() {
             return candidate.to_string();
@@ -63,9 +77,20 @@ fn find_llvm_config() -> String {
 }
 
 fn llvm_config_flags(bin: &str, arg: &str) -> Vec<String> {
-    let Ok(out) = Command::new(bin).arg(arg).output() else { return vec![]; };
+    let Ok(out) = Command::new(bin).arg(arg).output() else {
+        return vec![];
+    };
     String::from_utf8_lossy(&out.stdout)
         .split_whitespace()
         .map(str::to_owned)
         .collect()
+}
+
+fn llvm_config_output(bin: &str, arg: &str) -> Option<String> {
+    let out = Command::new(bin).arg(arg).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    Some(s)
 }

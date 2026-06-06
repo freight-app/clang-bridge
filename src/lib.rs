@@ -6,7 +6,6 @@ pub mod doc;
 pub mod goto;
 pub mod hover;
 pub mod symbol;
-pub mod tidy;
 
 use std::ffi::CString;
 
@@ -24,16 +23,24 @@ impl Index {
         let cargs: Vec<CString> = args.iter().filter_map(|a| CString::new(*a).ok()).collect();
         let ptrs: Vec<*const std::ffi::c_char> = cargs.iter().map(|s| s.as_ptr()).collect();
         let tu = unsafe { ffi::cb_parse(self.0, src.as_ptr(), ptrs.as_ptr(), ptrs.len()) };
-        if tu.is_null() { None } else { Some(TranslationUnit(tu)) }
+        if tu.is_null() {
+            None
+        } else {
+            Some(TranslationUnit(tu))
+        }
     }
 }
 
 impl Default for Index {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Drop for Index {
-    fn drop(&mut self) { unsafe { ffi::cb_index_destroy(self.0) } }
+    fn drop(&mut self) {
+        unsafe { ffi::cb_index_destroy(self.0) }
+    }
 }
 
 unsafe impl Send for Index {}
@@ -56,12 +63,32 @@ impl TranslationUnit {
     /// Returns `None` if no symbol is found at that location.
     pub fn symbol_at(&self, line: u32, col: u32) -> Option<symbol::Symbol> {
         let sym = unsafe { ffi::cb_symbol_at(self.0, line, col) };
-        if sym.is_null() { None } else { Some(symbol::Symbol(sym)) }
+        if sym.is_null() {
+            None
+        } else {
+            Some(symbol::Symbol(sym))
+        }
+    }
+
+    /// Reparse the translation unit with an optional in-memory replacement for
+    /// its main file. Pass `None` to reparse from disk.
+    pub fn reparse(&self, content: Option<&str>) -> bool {
+        match content {
+            Some(s) => {
+                let Ok(cs) = CString::new(s) else {
+                    return false;
+                };
+                unsafe { ffi::cb_transunit_reparse(self.0, cs.as_ptr(), s.len()) == 1 }
+            }
+            None => unsafe { ffi::cb_transunit_reparse(self.0, std::ptr::null(), 0) == 1 },
+        }
     }
 }
 
 impl Drop for TranslationUnit {
-    fn drop(&mut self) { unsafe { ffi::cb_transunit_destroy(self.0) } }
+    fn drop(&mut self) {
+        unsafe { ffi::cb_transunit_destroy(self.0) }
+    }
 }
 
 unsafe impl Send for TranslationUnit {}

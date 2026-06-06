@@ -70,7 +70,7 @@ typedef struct {
     uint32_t    col;
     uint8_t     severity; // 0=note 1=remark 2=warning 3=error 4=fatal
     const char *message;
-    const char *check_name; // NULL for compiler diags; non-NULL for tidy checks
+    const char *check_name; // optional diagnostic source/check identifier
 } CB_Diag;
 
 typedef struct CB_DiagIter CB_DiagIter;
@@ -129,26 +129,6 @@ CB_CompletionIter *cb_complete(CB_TransUnit *tu,
 /// Returns 1 and fills *out (pointers valid until next call or destroy).
 int  cb_completion_next(CB_CompletionIter *it, CB_CompletionItem *out);
 void cb_completion_iter_destroy(CB_CompletionIter *it);
-
-// ── clang-tidy (subprocess) ───────────────────────────────────────────────────
-//
-// Invokes the `clang-tidy` binary as a subprocess (--export-fixes=-) and
-// parses its YAML/JSON output.  This avoids needing the clangTidy static libs.
-
-typedef struct CB_TidyIter CB_TidyIter;
-
-/// Run clang-tidy on `source_file` with the given `checks` glob and compile
-/// flags.  `clang_tidy_bin` may be NULL to use "clang-tidy" from PATH.
-CB_TidyIter *cb_tidy_run(
-    const char *clang_tidy_bin,
-    const char *source_file,
-    const char *checks,
-    const char * const *args,
-    size_t       nargs
-);
-/// Returns 1 and fills *out (pointers valid until next call or destroy).
-int  cb_tidy_next(CB_TidyIter *it, CB_Diag *out);
-void cb_tidy_iter_destroy(CB_TidyIter *it);
 
 #ifdef __cplusplus
 }

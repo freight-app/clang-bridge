@@ -4,8 +4,12 @@
 #include <clang/AST/Comment.h>
 #include <clang/AST/Decl.h>
 #include <clang/AST/DeclCXX.h>
+#include <clang/AST/Expr.h>
+#include <clang/AST/ExprCXX.h>
 #include <clang/AST/PrettyPrinter.h>
 #include <clang/AST/RecursiveASTVisitor.h>
+#include <clang/AST/TemplateName.h>
+#include <clang/AST/TypeLoc.h>
 #include <clang/Basic/Diagnostic.h>
 #include <clang/Basic/SourceLocation.h>
 #include <clang/Basic/SourceManager.h>
@@ -265,35 +269,120 @@ struct CB_Symbol {
     uint32_t    def_line = 0;
 };
 
-// Walk the AST to find the NamedDecl whose source range covers (line, col).
-class SymbolLocator : public RecursiveASTVisitor<SymbolLocator> {
+// Visitor: matches expression reference sites (DeclRefExpr, MemberExpr, TypeLoc).
+// This is Stage 1 — covers the common case where the cursor is on a *use*, not a
+// declaration.
+class RefLocator : public RecursiveASTVisitor<RefLocator> {
 public:
-    ASTContext    &Ctx;
     const SourceManager &SM;
-    uint32_t      target_line;
-    uint32_t      target_col;
+    uint32_t target_line, target_col;
     const NamedDecl *found = nullptr;
 
-    SymbolLocator(ASTContext &C, uint32_t l, uint32_t c)
-        : Ctx(C), SM(C.getSourceManager()), target_line(l), target_col(c) {}
+    RefLocator(const SourceManager &SM, uint32_t l, uint32_t c)
+        : SM(SM), target_line(l), target_col(c) {}
 
-    bool VisitNamedDecl(NamedDecl *ND) {
-        auto loc = SM.getPresumedLoc(ND->getLocation());
-        if (!loc.isValid()) return true;
-        if ((uint32_t)loc.getLine() == target_line &&
-            (uint32_t)loc.getColumn() <= target_col) {
-            found = ND;
+    bool shouldVisitTemplateInstantiations() const { return false; }
+
+    // Returns true when (target_line, target_col) lands inside the token at
+    // tokenLoc of the given length.
+    bool inToken(SourceLocation tokenLoc, size_t nameLen) const {
+        if (nameLen == 0) return false;
+        auto ploc = SM.getPresumedLoc(SM.getSpellingLoc(tokenLoc));
+        if (!ploc.isValid()) return false;
+        uint32_t startCol = (uint32_t)ploc.getColumn();
+        return (uint32_t)ploc.getLine() == target_line &&
+               target_col >= startCol &&
+               target_col < startCol + (uint32_t)nameLen;
+    }
+
+    bool VisitDeclRefExpr(DeclRefExpr *E) {
+        if (!found) {
+            const NamedDecl *D = E->getFoundDecl();
+            if (inToken(E->getLocation(), D->getName().size()))
+                found = D;
+        }
+        return true;
+    }
+
+    bool VisitMemberExpr(MemberExpr *E) {
+        if (!found) {
+            const NamedDecl *D = E->getMemberDecl();
+            if (inToken(E->getMemberLoc(), D->getName().size()))
+                found = D;
+        }
+        return true;
+    }
+
+    bool VisitTagTypeLoc(TagTypeLoc TL) {
+        if (!found) {
+            const TagDecl *D = TL.getDecl();
+            if (!D->getName().empty() && inToken(TL.getNameLoc(), D->getName().size()))
+                found = D;
+        }
+        return true;
+    }
+
+    bool VisitTypedefTypeLoc(TypedefTypeLoc TL) {
+        if (!found) {
+            const TypedefNameDecl *D = TL.getTypePtr()->getDecl();
+            if (inToken(TL.getNameLoc(), D->getName().size()))
+                found = D;
+        }
+        return true;
+    }
+
+    bool VisitTemplateSpecializationTypeLoc(TemplateSpecializationTypeLoc TL) {
+        if (!found) {
+            TemplateName TN = TL.getTypePtr()->getTemplateName();
+            if (TemplateDecl *TD = TN.getAsTemplateDecl()) {
+                if (inToken(TL.getTemplateNameLoc(), TD->getName().size()))
+                    found = TD;
+            }
         }
         return true;
     }
 };
 
+// Visitor: matches declaration sites (original fallback behaviour).
+// Stage 2 — used when no expression reference matched the cursor.
+class DeclLocator : public RecursiveASTVisitor<DeclLocator> {
+public:
+    const SourceManager &SM;
+    uint32_t target_line, target_col;
+    const NamedDecl *found = nullptr;
+
+    DeclLocator(const SourceManager &SM, uint32_t l, uint32_t c)
+        : SM(SM), target_line(l), target_col(c) {}
+
+    bool VisitNamedDecl(NamedDecl *ND) {
+        auto ploc = SM.getPresumedLoc(ND->getLocation());
+        if (!ploc.isValid()) return true;
+        if ((uint32_t)ploc.getLine() == target_line &&
+            (uint32_t)ploc.getColumn() <= target_col)
+            found = ND;
+        return true;
+    }
+};
+
+// Shared symbol resolution: finds the NamedDecl at (1-based) line/col.
+// Checks expression reference nodes first, then declaration sites.
+static const NamedDecl *locate_symbol_at(ASTUnit *ast, uint32_t line, uint32_t col) {
+    ASTContext &Ctx = ast->getASTContext();
+    const SourceManager &SM = Ctx.getSourceManager();
+
+    RefLocator refV(SM, line, col);
+    refV.TraverseDecl(Ctx.getTranslationUnitDecl());
+    if (refV.found) return refV.found;
+
+    DeclLocator declV(SM, line, col);
+    declV.TraverseDecl(Ctx.getTranslationUnitDecl());
+    return declV.found;
+}
+
 CB_Symbol *cb_symbol_at(CB_TransUnit *tu, uint32_t line, uint32_t col) {
-    ASTContext &Ctx = tu->ast->getASTContext();
-    SymbolLocator loc(Ctx, line, col);
-    loc.TraverseDecl(Ctx.getTranslationUnitDecl());
-    const NamedDecl *ND = loc.found;
+    const NamedDecl *ND = locate_symbol_at(tu->ast.get(), line, col);
     if (!ND) return nullptr;
+    ASTContext &Ctx = tu->ast->getASTContext();
 
     auto *sym = new CB_Symbol{};
     sym->name = ND->getQualifiedNameAsString();
@@ -338,14 +427,9 @@ const char *cb_symbol_def_file(const CB_Symbol *s)  { return s->def_file.c_str()
 uint32_t    cb_symbol_def_line(const CB_Symbol *s)  { return s->def_line; }
 void        cb_symbol_destroy(CB_Symbol *s)         { delete s; }
 
-// ── clang-tidy (subprocess) ───────────────────────────────────────────────────
-// Invokes the clang-tidy binary and parses its line-based warning output.
-// Format: "file:line:col: severity: message [check-name]"
-
 #include <clang/Frontend/FrontendActions.h>
 #include <clang/Sema/CodeCompleteConsumer.h>
 #include <clang/Sema/Sema.h>
-#include <cstdio>
 
 // ── Free helpers ──────────────────────────────────────────────────────────────
 
@@ -368,11 +452,9 @@ int cb_transunit_reparse(CB_TransUnit *tu, const char *buf, size_t len) {
 // ── Hover markdown ────────────────────────────────────────────────────────────
 
 char *cb_hover_markdown(CB_TransUnit *tu, uint32_t line, uint32_t col) {
-    ASTContext &Ctx = tu->ast->getASTContext();
-    SymbolLocator loc(Ctx, line, col);
-    loc.TraverseDecl(Ctx.getTranslationUnitDecl());
-    const NamedDecl *ND = loc.found;
+    const NamedDecl *ND = locate_symbol_at(tu->ast.get(), line, col);
     if (!ND) return nullptr;
+    ASTContext &Ctx = tu->ast->getASTContext();
 
     std::string sig = prettySignature(ND, Ctx);
     std::string brief;
@@ -407,18 +489,18 @@ char *cb_hover_markdown(CB_TransUnit *tu, uint32_t line, uint32_t col) {
 
 int cb_goto_definition(CB_TransUnit *tu, uint32_t line, uint32_t col,
                        CB_Location *out) {
-    ASTContext &Ctx = tu->ast->getASTContext();
-    SymbolLocator loc(Ctx, line, col);
-    loc.TraverseDecl(Ctx.getTranslationUnitDecl());
-    const NamedDecl *ND = loc.found;
+    const NamedDecl *ND = locate_symbol_at(tu->ast.get(), line, col);
     if (!ND) return 0;
 
-    // Prefer the definition over the declaration
+    // Prefer the definition over the first declaration.
     const NamedDecl *target = ND;
     if (auto *FD = dyn_cast<FunctionDecl>(ND))
         if (auto *Def = FD->getDefinition()) target = Def;
+    if (auto *TD = dyn_cast<TagDecl>(ND))
+        if (auto *Def = TD->getDefinition()) target = Def;
 
-    auto ploc = Ctx.getSourceManager().getPresumedLoc(target->getLocation());
+    auto ploc = tu->ast->getASTContext().getSourceManager()
+                    .getPresumedLoc(target->getLocation());
     if (!ploc.isValid()) return 0;
 
     out->file = strdup(ploc.getFilename() ? ploc.getFilename() : "");
@@ -576,112 +658,3 @@ int cb_completion_next(CB_CompletionIter *it, CB_CompletionItem *out) {
 }
 
 void cb_completion_iter_destroy(CB_CompletionIter *it) { delete it; }
-
-struct CB_TidyIter {
-    std::vector<DiagEntry> entries;
-    size_t pos = 0;
-    DiagEntry current;
-};
-
-static uint8_t parseSeverity(const std::string &s) {
-    if (s == "note")    return 0;
-    if (s == "remark")  return 1;
-    if (s == "warning") return 2;
-    if (s == "error")   return 3;
-    return 4; // fatal / unknown
-}
-
-CB_TidyIter *cb_tidy_run(
-    const char *clang_tidy_bin,
-    const char *source_file,
-    const char *checks,
-    const char * const *args,
-    size_t nargs
-) {
-    std::string bin = clang_tidy_bin ? clang_tidy_bin : "clang-tidy";
-
-    // Build command: clang-tidy --checks=<checks> <file> -- <args...>
-    std::string cmd = bin;
-    if (checks && *checks) {
-        cmd += " --checks=";
-        cmd += checks;
-    }
-    cmd += " --quiet \"";
-    cmd += source_file;
-    cmd += "\" --";
-    for (size_t i = 0; i < nargs; ++i) {
-        cmd += " ";
-        cmd += args[i];
-    }
-    cmd += " 2>&1";
-
-    FILE *pipe = popen(cmd.c_str(), "r");
-    auto *it = new CB_TidyIter{};
-    if (!pipe) return it;
-
-    char buf[4096];
-    while (fgets(buf, sizeof(buf), pipe)) {
-        std::string line(buf);
-        // Strip trailing newline
-        if (!line.empty() && line.back() == '\n') line.pop_back();
-
-        // Parse: path:line:col: severity: message [check-name]
-        DiagEntry e;
-        size_t colon1 = line.find(':', 2);
-        if (colon1 == std::string::npos) continue;
-        size_t colon2 = line.find(':', colon1 + 1);
-        if (colon2 == std::string::npos) continue;
-        size_t colon3 = line.find(':', colon2 + 1);
-        if (colon3 == std::string::npos) continue;
-
-        e.file = line.substr(0, colon1);
-        try {
-            e.line = (uint32_t)std::stoul(line.substr(colon1 + 1, colon2 - colon1 - 1));
-            e.col  = (uint32_t)std::stoul(line.substr(colon2 + 1, colon3 - colon2 - 1));
-        } catch (...) { continue; }
-
-        // " severity: message [check-name]"
-        std::string rest = line.substr(colon3 + 1);
-        size_t sev_start = rest.find_first_not_of(' ');
-        if (sev_start == std::string::npos) continue;
-        size_t sev_colon = rest.find(':', sev_start);
-        if (sev_colon == std::string::npos) continue;
-
-        std::string sev_str = rest.substr(sev_start, sev_colon - sev_start);
-        e.severity = parseSeverity(sev_str);
-
-        std::string msg = rest.substr(sev_colon + 1);
-        size_t ms = msg.find_first_not_of(' ');
-        if (ms != std::string::npos) msg = msg.substr(ms);
-
-        // Extract [check-name] from end
-        if (!msg.empty() && msg.back() == ']') {
-            size_t ob = msg.rfind('[');
-            if (ob != std::string::npos) {
-                e.check_name = msg.substr(ob + 1, msg.size() - ob - 2);
-                msg = msg.substr(0, ob);
-                size_t me = msg.find_last_not_of(' ');
-                if (me != std::string::npos) msg = msg.substr(0, me + 1);
-            }
-        }
-        e.message = msg;
-        it->entries.push_back(std::move(e));
-    }
-    pclose(pipe);
-    return it;
-}
-
-int cb_tidy_next(CB_TidyIter *it, CB_Diag *out) {
-    if (it->pos >= it->entries.size()) return 0;
-    it->current = it->entries[it->pos++];
-    out->file       = it->current.file.c_str();
-    out->line       = it->current.line;
-    out->col        = it->current.col;
-    out->severity   = it->current.severity;
-    out->message    = it->current.message.c_str();
-    out->check_name = it->current.check_name.empty()
-                    ? nullptr : it->current.check_name.c_str();
-    return 1;
-}
-
-void cb_tidy_iter_destroy(CB_TidyIter *it) { delete it; }
