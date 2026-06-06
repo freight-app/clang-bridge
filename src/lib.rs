@@ -6,6 +6,7 @@ pub mod doc;
 pub mod docsym;
 pub mod goto;
 pub mod hover;
+pub mod inlay;
 pub mod sighelp;
 pub mod symbol;
 

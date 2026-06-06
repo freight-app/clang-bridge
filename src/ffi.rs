@@ -68,6 +68,17 @@ pub struct CB_FixIt {
 pub struct CB_SigHelp(());
 
 #[repr(C)]
+pub struct CB_InlayHint {
+    pub line:  u32,
+    pub col:   u32,
+    pub label: *const c_char,
+    pub kind:  u8,
+}
+
+#[repr(C)]
+pub struct CB_InlayHintList(());
+
+#[repr(C)]
 pub struct CB_DocSym {
     pub name: *const c_char,
     pub kind: *const c_char,
@@ -140,6 +151,9 @@ extern "C" {
     // Reparse
     pub fn cb_transunit_reparse(tu: *mut CB_TransUnit, buf: *const c_char, len: usize) -> i32;
 
+    // Raw comment text
+    pub fn cb_raw_comment_at(tu: *mut CB_TransUnit, line: u32, col: u32) -> *mut c_char;
+
     // Hover markdown
     pub fn cb_hover_markdown(tu: *mut CB_TransUnit, line: u32, col: u32) -> *mut c_char;
     pub fn cb_hover_full(tu: *mut CB_TransUnit, line: u32, col: u32) -> *mut c_char;
@@ -162,4 +176,20 @@ extern "C" {
     ) -> *mut CB_CompletionIter;
     pub fn cb_completion_next(it: *mut CB_CompletionIter, out: *mut CB_CompletionItem) -> i32;
     pub fn cb_completion_iter_destroy(it: *mut CB_CompletionIter);
+
+    // Inlay hints
+    pub fn cb_inlay_hints(
+        tu: *mut CB_TransUnit,
+        start_line: u32,
+        end_line: u32,
+    ) -> *mut CB_InlayHintList;
+    pub fn cb_inlay_hint_count(list: *const CB_InlayHintList) -> usize;
+    pub fn cb_inlay_hint_get(list: *const CB_InlayHintList, i: usize, out: *mut CB_InlayHint);
+    pub fn cb_inlay_hint_list_destroy(list: *mut CB_InlayHintList);
+
+    // Type at cursor
+    pub fn cb_type_at(tu: *mut CB_TransUnit, line: u32, col: u32) -> *mut c_char;
+
+    // Macro hover
+    pub fn cb_macro_at(tu: *mut CB_TransUnit, line: u32, col: u32) -> *mut c_char;
 }

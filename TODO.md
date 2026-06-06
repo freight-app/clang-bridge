@@ -22,95 +22,40 @@ API gaps and quality issues. Updated after each work session.
   override the compiler and `llvm-config` binary. `libdir` derived from
   `llvm-config --libdir` instead of being hardcoded.
 
----
+- [x] **`cb_document_symbols`** (2026-06-06)
+  `DocSymVisitor` with `parent_stack` / `decl_to_idx` for nested and
+  out-of-class definitions. Rust: `docsym.rs` with `DocSymList`.
 
-## High priority
+- [x] **Diagnostic end-ranges and fix-it hints** (2026-06-06)
+  `CB_Diag` extended with `end_line`/`end_col`. `CB_FixIt` struct,
+  `cb_diag_fixit_count`, `cb_diag_fixit_get`. Rust: `FixIt` struct in
+  `diag.rs`.
 
-### `cb_document_symbols` — editor outline / symbol list
+- [x] **`cb_signature_help`** (2026-06-06)
+  `BridgeSigHelpConsumer` via `ProcessOverloadCandidates`. Rust: `sighelp.rs`.
 
-Missing function: `CB_SymbolList* cb_document_symbols(CB_TU*, size_t* count)`.
+- [x] **`cb_hover_full`** (2026-06-06)
+  Full `FullComment` AST traversal rendering `@param`/`@returns`/`@note`/
+  `@warning`/`@deprecated` as Markdown plus definition-location footer.
 
-Visitor collects all `NamedDecl` nodes (functions, classes, namespaces, fields,
-enums, typedefs, variables) with name, kind, definition range, and selection range.
-Parent/child nesting via `DeclContext` walking; each item carries a
-`parent_index` (or -1 for top-level).
+- [x] **`cb_raw_comment_at`** (2026-06-06)
+  `getRawCommentForDeclNoCache` + `getFormattedText`. Exposed in `hover.rs`.
 
-Maps to LSP `textDocument/documentSymbol`.
+- [x] **`cb_inlay_hints`** (2026-06-06)
+  `InlayHintVisitor` emits parameter-name hints (kind=0) at call sites and
+  deduced-type hints (kind=1) for `auto` variables. Rust: `inlay.rs`.
 
----
+- [x] **`cb_type_at`** (2026-06-06)
+  Returns `QualType::getAsString` for `VarDecl`/`FieldDecl` at cursor.
+  Exposed as `hover::type_at`.
 
-### Diagnostic end-ranges and fix-it hints
-
-`CB_Diag` only has a point location. Clang diagnostics carry:
-- `SourceRange` — start/end of the squiggly-underline region.
-- `FixItHint` — replacement range + replacement text.
-
-Add `end_line`, `end_col` to `CB_Diag` and a separate `CB_FixIt` array.
-Expose both in `src/diag.rs`.
-
-Enables: precise editor underlines and `textDocument/codeAction` quick-fixes.
-
----
-
-### `cb_signature_help` — parameter tooltip at call sites
-
-Missing function: `CB_SigHelp* cb_signature_help(CB_TU*, unsigned line, unsigned col)`.
-
-Use `ASTUnit::CodeComplete` in an overload context to produce `OverloadCandidate`
-items. Extract the active parameter index from the cursor's position within the
-argument list.
-
-Maps to LSP `textDocument/signatureHelp`.
+- [x] **`cb_macro_at`** (2026-06-06)
+  `Preprocessor::getMacroInfo` hover: shows `#define` spelling, param list,
+  expansion tokens, definition-location footer. Exposed as `hover::macro_hover`.
 
 ---
 
-### `cb_hover_full` — full doc comment rendering
-
-`cb_hover_markdown` returns brief + signature only. Add full traversal of the
-`clang::comments::FullComment` AST via `clang::comments::CommentVisitor<T>`:
-
-- `@param` / `\param` blocks.
-- `@returns` / `\returns` block.
-- `@throws`, `@note`, `@warning`, `@deprecated`.
-- Parent context (enclosing namespace / class).
-- "Defined in `file:line`" footer.
-
----
-
-## Medium priority
-
-### `cb_inlay_hints` — parameter names and deduced types
-
-Missing: `CB_InlayHint* cb_inlay_hints(CB_TU*, unsigned start_line, unsigned end_line, size_t* count)`.
-
-- **Parameter names**: walk `CallExpr::arguments()`; emit `name:` label before
-  each positional argument using `ParmVarDecl::getName()`.
-- **Deduced types**: walk `VarDecl` with deduced type; emit elaborated type string
-  after the variable name.
-
-Maps to LSP `textDocument/inlayHint`.
-
----
-
-### `cb_type_at` — type string for arbitrary expression
-
-Missing: `const char* cb_type_at(CB_TU*, unsigned line, unsigned col)`.
-
-Find the innermost `Expr` covering the cursor; call
-`Expr::getType().getAsString(PrintingPolicy)`. Useful for hover on variables
-with no doc comment.
-
----
-
-### `cb_macro_at` — macro definition hover
-
-`cb_hover_markdown` returns nothing for macro use sites.
-
-- Walk `Preprocessor::getMacroInfo(II)` to find the definition.
-- Return definition location + expansion text.
-- Either extend `cb_hover_markdown` or expose as `cb_macro_at`.
-
----
+## Remaining — freight LSP
 
 ### `cb_inclusions` — `#include` graph
 
@@ -120,6 +65,8 @@ Register a `PPCallbacks` subclass during parse to record `InclusionDirective`
 events: including file, included file, directive source range.
 
 Maps to LSP `textDocument/documentLink`.
+
+*Note: requires pre-parse registration; harder than post-parse queries.*
 
 ---
 
@@ -134,8 +81,6 @@ Use `ASTUnit::LoadFromCompilerInvocation` with an `llvm::MemoryBuffer` as the
 virtual main file.
 
 ---
-
-## Lower priority
 
 ### `cb_semantic_tokens` — per-token kind map
 
@@ -192,3 +137,107 @@ not.
 live buffer passed in `unsaved_buf`. The unsaved buffer is forwarded to the
 completer but the AST is stale. Fix: reparse with the buffer before invoking
 `CodeComplete`, or document clearly that callers must call `cb_reparse` first.
+
+---
+
+## Extra — broader API (non-freight use cases)
+
+These extend clang-bridge into a general-purpose C/C++ static analysis library,
+useful for editors, linters, documentation generators, and refactoring tools.
+
+### `cb_rename` — safe symbol rename
+
+`CB_RenameResult* cb_rename(CB_Index*, const char* usr, const char* new_name)`.
+
+Collect all reference sites from `cb_references`, verify the new name doesn't
+conflict with visible declarations, and return a sorted edit list.
+
+Maps to LSP `textDocument/rename` and `textDocument/prepareRename`.
+
+---
+
+### `cb_call_hierarchy` — caller/callee graph
+
+```c
+CB_CallHierItem* cb_call_hierarchy_prepare(CB_TU*, uint32_t line, uint32_t col);
+CB_CallEdge*     cb_incoming_calls(CB_Index*, const CB_CallHierItem*, size_t* count);
+CB_CallEdge*     cb_outgoing_calls(CB_Index*, const CB_CallHierItem*, size_t* count);
+```
+
+Uses `RecursiveASTVisitor` to build the call graph for a root symbol. Useful for
+impact analysis and call-chain exploration.
+
+Maps to LSP `textDocument/prepareCallHierarchy`, `callHierarchy/incomingCalls`,
+`callHierarchy/outgoingCalls`.
+
+---
+
+### `cb_type_hierarchy` — base/derived class chains
+
+```c
+CB_TypeHierItem* cb_type_hierarchy_prepare(CB_TU*, uint32_t line, uint32_t col);
+CB_TypeHierItem* cb_supertypes(CB_Index*, const CB_TypeHierItem*, size_t* count);
+CB_TypeHierItem* cb_subtypes(CB_Index*, const CB_TypeHierItem*, size_t* count);
+```
+
+Walk `CXXRecordDecl::bases()` for supertypes and scan the index for subtypes.
+Maps to LSP `textDocument/prepareTypeHierarchy`.
+
+---
+
+### `cb_code_actions` — structured quick-fix list
+
+`CB_CodeAction* cb_code_actions(CB_TU*, uint32_t line, uint32_t col, size_t* count)`.
+
+- Surface fix-its from diagnostics already attached to the TU.
+- Provide stock actions: extract variable, extract function, add missing `#include`.
+
+Maps to LSP `textDocument/codeAction`.
+
+---
+
+### `cb_highlight` — document highlight / all usages in file
+
+`CB_Range* cb_highlight(CB_TU*, uint32_t line, uint32_t col, size_t* count)`.
+
+Walk the TU for all reference sites of the symbol under cursor. Cheaper than
+`cb_references` because it is file-scoped. Maps to LSP
+`textDocument/documentHighlight`.
+
+---
+
+### `cb_folding_ranges` — code folding regions
+
+`CB_FoldingRange* cb_folding_ranges(CB_TU*, size_t* count)`.
+
+Emit folding ranges for: function/class bodies, comment blocks, `#if`/`#endif`
+preprocessor regions, brace-enclosed blocks. Maps to LSP
+`textDocument/foldingRange`.
+
+---
+
+### `cb_workspace_symbols` — fuzzy symbol search
+
+`CB_WorkspaceSymbol* cb_workspace_symbols(CB_Index*, const char* query, size_t* count)`.
+
+Maintain a name→USR index built from all parsed TUs; support fuzzy matching via
+a simple trigram or prefix index. Maps to LSP `workspace/symbol`.
+
+---
+
+### `cb_expand_macro` — show full macro expansion
+
+`char* cb_expand_macro(CB_TU*, uint32_t line, uint32_t col)`.
+
+Walk `Preprocessor`'s expansion chain for the token at the cursor, render each
+expansion step. Useful as a hover enrichment or standalone linter output.
+
+---
+
+### `cb_ast_dump` — raw AST as JSON
+
+`char* cb_ast_dump(CB_TU*, uint32_t start_line, uint32_t end_line)`.
+
+Serialize the AST subtree for a line range as JSON (node kind, type, range,
+children). Useful for debugging, external analysis tools, and tree-sitter parity
+checks.

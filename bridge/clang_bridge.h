@@ -129,6 +129,12 @@ int cb_transunit_reparse(CB_TransUnit *tu,
 
 // ── Hover markdown ────────────────────────────────────────────────────────────
 
+/// Return the raw (stripped) doc comment text for the symbol at (line, col).
+/// Comment markers (`///`, `/** */`) are removed; formatting is otherwise
+/// preserved.  Returns NULL when no comment is attached to the symbol.
+/// Caller must free with cb_free_string().
+char *cb_raw_comment_at(CB_TransUnit *tu, uint32_t line, uint32_t col);
+
 /// Brief hover: signature in a code block + first comment line.
 /// Caller must free the result with cb_free_string().
 char *cb_hover_markdown(CB_TransUnit *tu, uint32_t line, uint32_t col);
@@ -169,6 +175,42 @@ size_t      cb_sig_help_param_count(const CB_SigHelp *sh, size_t overload_i);
 /// Label for parameter `param_i` of overload `overload_i`.
 const char *cb_sig_help_param_label(CB_SigHelp *sh, size_t overload_i, size_t param_i);
 void        cb_sig_help_destroy(CB_SigHelp *sh);
+
+// ── Inlay hints ───────────────────────────────────────────────────────────────
+
+typedef struct {
+    uint32_t    line;   // 1-based; hint appears before this position
+    uint32_t    col;    // 1-based
+    const char *label;  // e.g. "x:" for a parameter hint, ": int" for a type hint
+    uint8_t     kind;   // 0 = parameter name, 1 = deduced type
+} CB_InlayHint;
+
+typedef struct CB_InlayHintList CB_InlayHintList;
+
+/// Collect inlay hints for all lines in [start_line, end_line] (1-based, inclusive).
+/// Covers parameter-name hints at call sites and deduced-type hints for `auto` vars.
+/// Caller must free with cb_inlay_hint_list_destroy().
+CB_InlayHintList *cb_inlay_hints(CB_TransUnit *tu,
+                                  uint32_t start_line, uint32_t end_line);
+size_t            cb_inlay_hint_count(const CB_InlayHintList *list);
+/// Fills *out; label pointer valid until the next call to cb_inlay_hint_get or destroy.
+void              cb_inlay_hint_get(const CB_InlayHintList *list, size_t i, CB_InlayHint *out);
+void              cb_inlay_hint_list_destroy(CB_InlayHintList *list);
+
+// ── Type at cursor ────────────────────────────────────────────────────────────
+
+/// Return the fully-qualified type string for the variable/field/parameter at
+/// (line, col), or NULL when not applicable.  Useful for enriching hover text.
+/// Caller must free with cb_free_string().
+char *cb_type_at(CB_TransUnit *tu, uint32_t line, uint32_t col);
+
+// ── Macro hover ───────────────────────────────────────────────────────────────
+
+/// Return a Markdown hover block for the macro at (line, col) — shows the
+/// `#define` spelling, parameter list (if function-like), expansion tokens,
+/// and the definition-location footer.  Returns NULL when (line, col) is not
+/// a macro reference.  Caller must free with cb_free_string().
+char *cb_macro_at(CB_TransUnit *tu, uint32_t line, uint32_t col);
 
 // ── Code completion ───────────────────────────────────────────────────────────
 

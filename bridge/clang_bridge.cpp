@@ -15,6 +15,8 @@
 #include <clang/Basic/SourceManager.h>
 #include <clang/Frontend/ASTUnit.h>
 #include <clang/Frontend/CompilerInstance.h>
+#include <clang/Lex/Lexer.h>
+#include <clang/Lex/Preprocessor.h>
 #include <clang/Index/IndexDataConsumer.h>
 #include <clang/Index/IndexingAction.h>
 #include <clang/Index/USRGeneration.h>
@@ -489,6 +491,230 @@ void cb_doc_sym_get(const CB_DocSymList *list, size_t i, CB_DocSym *out) {
 
 void cb_doc_sym_list_destroy(CB_DocSymList *list) { delete list; }
 
+// Forward declaration — defined in the "Symbol lookup" section below.
+static const NamedDecl *locate_symbol_at(ASTUnit *ast, uint32_t line, uint32_t col);
+
+// ── Inlay hints ───────────────────────────────────────────────────────────────
+
+struct InlayHintEntry {
+    uint32_t    line, col; // 1-based; hint is displayed BEFORE this position
+    std::string label;
+    uint8_t     kind;      // 0 = parameter name, 1 = deduced type
+};
+
+struct CB_InlayHintList {
+    std::vector<InlayHintEntry> entries;
+    InlayHintEntry current; // stable storage for getter return values
+};
+
+class InlayHintVisitor : public RecursiveASTVisitor<InlayHintVisitor> {
+public:
+    ASTContext          &Ctx;
+    const SourceManager &SM;
+    std::vector<InlayHintEntry> &hints;
+    uint32_t start_line, end_line;
+
+    InlayHintVisitor(ASTContext &C, std::vector<InlayHintEntry> &out,
+                     uint32_t sl, uint32_t el)
+        : Ctx(C), SM(C.getSourceManager()), hints(out),
+          start_line(sl), end_line(el) {}
+
+    bool shouldVisitTemplateInstantiations() const { return false; }
+
+    bool inViewport(SourceLocation loc) const {
+        auto p = SM.getPresumedLoc(SM.getSpellingLoc(loc));
+        if (!p.isValid()) return false;
+        return p.getLine() >= start_line && p.getLine() <= end_line;
+    }
+
+    // ── Parameter name hints at call sites ────────────────────────────────────
+
+    bool VisitCallExpr(CallExpr *E) {
+        // Skip operator-call expressions — they clutter the view.
+        if (isa<CXXOperatorCallExpr>(E)) return true;
+
+        const FunctionDecl *FD = E->getDirectCallee();
+        if (!FD) return true;
+
+        auto pbegin = FD->param_begin();
+        auto pend   = FD->param_end();
+        unsigned i = 0;
+        for (auto *arg : E->arguments()) {
+            if (pbegin + i >= pend) break;
+            const ParmVarDecl *PD = *(pbegin + i);
+            ++i;
+            if (PD->getName().empty()) continue;
+            if (!inViewport(arg->getBeginLoc())) continue;
+
+            // Suppress the hint when the argument is already the same name
+            // (e.g. `f(x)` where param is also named x).
+            if (auto *DRE = dyn_cast<DeclRefExpr>(arg->IgnoreParenImpCasts()))
+                if (DRE->getDecl()->getName() == PD->getName()) continue;
+
+            auto p = SM.getPresumedLoc(SM.getSpellingLoc(arg->getBeginLoc()));
+            if (!p.isValid()) continue;
+            InlayHintEntry h;
+            h.line  = p.getLine();
+            h.col   = p.getColumn();
+            h.label = PD->getNameAsString() + ":";
+            h.kind  = 0;
+            hints.push_back(std::move(h));
+        }
+        return true;
+    }
+
+    // ── Deduced-type hints for `auto` variable declarations ───────────────────
+
+    bool VisitVarDecl(VarDecl *D) {
+        if (SM.isInSystemHeader(D->getLocation())) return true;
+        if (!inViewport(D->getLocation())) return true;
+        if (isa<ParmVarDecl>(D)) return true; // parameters are always typed
+
+        // Check if the variable was declared with `auto`.
+        const AutoType *AT = D->getTypeSourceInfo()
+                               ->getType()->getContainedAutoType();
+        if (!AT) return true;
+
+        QualType deduced = D->getType();
+        if (deduced->isUndeducedAutoType()) return true; // not yet deduced
+
+        PrintingPolicy PP(Ctx.getLangOpts());
+        PP.SuppressScope = 1; // keep it concise
+        std::string typeStr = deduced.getAsString(PP);
+        if (typeStr == "auto" || typeStr.empty()) return true;
+
+        auto p = SM.getPresumedLoc(D->getLocation());
+        if (!p.isValid()) return true;
+        InlayHintEntry h;
+        h.line  = p.getLine();
+        h.col   = p.getColumn();
+        h.label = ": " + typeStr;
+        h.kind  = 1;
+        hints.push_back(std::move(h));
+        return true;
+    }
+};
+
+CB_InlayHintList *cb_inlay_hints(CB_TransUnit *tu,
+                                   uint32_t start_line, uint32_t end_line) {
+    auto *list = new CB_InlayHintList{};
+    ASTContext &Ctx = tu->ast->getASTContext();
+    InlayHintVisitor V(Ctx, list->entries, start_line, end_line);
+    V.TraverseDecl(Ctx.getTranslationUnitDecl());
+    return list;
+}
+
+size_t cb_inlay_hint_count(const CB_InlayHintList *list) {
+    return list->entries.size();
+}
+
+void cb_inlay_hint_get(const CB_InlayHintList *list, size_t i, CB_InlayHint *out) {
+    auto *ml = const_cast<CB_InlayHintList *>(list);
+    ml->current = ml->entries[i];
+    out->line  = ml->current.line;
+    out->col   = ml->current.col;
+    out->label = ml->current.label.c_str();
+    out->kind  = ml->current.kind;
+}
+
+void cb_inlay_hint_list_destroy(CB_InlayHintList *list) { delete list; }
+
+// ── Type at cursor ─────────────────────────────────────────────────────────────
+
+/// Return the type string for the variable/field/parameter at (line, col),
+/// or NULL.  Useful for enriching hover when no doc comment exists.
+char *cb_type_at(CB_TransUnit *tu, uint32_t line, uint32_t col) {
+    const NamedDecl *ND = locate_symbol_at(tu->ast.get(), line, col);
+    if (!ND) return nullptr;
+    ASTContext &Ctx = tu->ast->getASTContext();
+
+    QualType qt;
+    if (auto *VD = dyn_cast<VarDecl>(ND))        qt = VD->getType();
+    else if (auto *FD = dyn_cast<FieldDecl>(ND)) qt = FD->getType();
+    else                                          return nullptr;
+
+    if (qt.isNull()) return nullptr;
+    PrintingPolicy PP(Ctx.getLangOpts());
+    PP.SuppressScope = 0;
+    std::string s = qt.getAsString(PP);
+    return s.empty() ? nullptr : strdup(s.c_str());
+}
+
+// ── Macro hover ───────────────────────────────────────────────────────────────
+
+/// Return a Markdown hover string for the macro at (line, col), or NULL if
+/// (line, col) is not a macro use site.  Caller must free with cb_free_string().
+char *cb_macro_at(CB_TransUnit *tu, uint32_t line, uint32_t col) {
+    ASTContext &Ctx = tu->ast->getASTContext();
+    const SourceManager &SM = Ctx.getSourceManager();
+    const LangOptions &LO   = Ctx.getLangOpts();
+
+    // Translate 1-based (line, col) → SourceLocation in the main file.
+    SourceLocation target =
+        SM.translateLineCol(SM.getMainFileID(), line, col);
+    if (!target.isValid()) return nullptr;
+
+    // Lex the raw token at the cursor position.
+    Token tok;
+    if (Lexer::getRawToken(target, tok, SM, LO, /*IgnoreWhiteSpace=*/false))
+        return nullptr;
+    if (tok.getKind() != tok::identifier && tok.getKind() != tok::raw_identifier)
+        return nullptr;
+
+    // getIdentifierInfo() asserts on tok::raw_identifier — look it up by spelling.
+    const IdentifierInfo *II = (tok.getKind() == tok::identifier)
+                                   ? tok.getIdentifierInfo()
+                                   : nullptr;
+    if (!II) {
+        std::string spelling = Lexer::getSpelling(tok, SM, LO);
+        if (spelling.empty()) return nullptr;
+        II = &Ctx.Idents.get(spelling);
+    }
+    if (!II) return nullptr;
+
+    Preprocessor &PP = tu->ast->getPreprocessor();
+    const MacroInfo *MI = PP.getMacroInfo(II);
+    if (!MI) return nullptr;
+
+    // Build the Markdown string.
+    std::string md;
+    md += "```cpp\n#define ";
+    md += II->getName().str();
+
+    if (!MI->isObjectLike()) {
+        // Function-like macro: show parameter list.
+        md += "(";
+        bool first = true;
+        for (const IdentifierInfo *param : MI->params()) {
+            if (!first) md += ", ";
+            md += param->getName().str();
+            first = false;
+        }
+        if (MI->isVariadic()) md += first ? "..." : ", ...";
+        md += ")";
+    }
+    md += " ";
+
+    // Append expansion tokens.
+    for (const Token &t : MI->tokens()) {
+        md += Lexer::getSpelling(t, SM, LO);
+        md += " ";
+    }
+    md += "\n```";
+
+    // Definition location footer.
+    auto defLoc = SM.getPresumedLoc(MI->getDefinitionLoc());
+    if (defLoc.isValid() && defLoc.getFilename()) {
+        md += "\n\n---\n*Defined in `";
+        md += defLoc.getFilename();
+        md += ":";
+        md += std::to_string(defLoc.getLine());
+        md += "`*";
+    }
+
+    return strdup(md.c_str());
+}
+
 // ── Symbol lookup ─────────────────────────────────────────────────────────────
 
 struct CB_Symbol {
@@ -734,6 +960,21 @@ static std::string renderFullComment(const comments::FullComment *FC,
         }
     }
     return md;
+}
+
+/// Return the raw (stripped) doc comment text for the symbol at (line, col),
+/// or NULL if none is found.  The text has comment markers removed but
+/// otherwise preserves the original formatting.  Caller must free with
+/// cb_free_string().
+char *cb_raw_comment_at(CB_TransUnit *tu, uint32_t line, uint32_t col) {
+    const NamedDecl *ND = locate_symbol_at(tu->ast.get(), line, col);
+    if (!ND) return nullptr;
+    ASTContext &Ctx = tu->ast->getASTContext();
+    const RawComment *RC = Ctx.getRawCommentForDeclNoCache(ND);
+    if (!RC) return nullptr;
+    std::string text = RC->getFormattedText(Ctx.getSourceManager(), Ctx.getDiagnostics());
+    if (text.empty()) return nullptr;
+    return strdup(text.c_str());
 }
 
 /// Full hover: signature + structured doc comment (param/returns/note) + def location.
