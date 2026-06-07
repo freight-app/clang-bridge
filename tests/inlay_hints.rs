@@ -66,3 +66,20 @@ fn no_hint_when_arg_matches_param_name() {
         "expected hint to be suppressed when arg matches param name, got: {param_hints:?}"
     );
 }
+
+#[test]
+fn decltype_type_hint() {
+    let src = "int foo() { return 1; }\nvoid f() { int x = 0; decltype(x) y = 1; decltype(foo()) z = foo(); }";
+    let path = write_temp("cb_inlay_decltype.cpp", src);
+    let idx = Index::new();
+    let tu = idx.parse(path.to_str().unwrap(), "", &["-std=c++17"]).unwrap();
+
+    let hints = inlay::inlay_hints(&tu, 1, 2);
+    let labels: Vec<_> = hints.iter().map(|h| h.label.clone()).collect();
+    // Both decltype(x) and decltype(foo()) should resolve to `: int`
+    let int_hints: Vec<_> = labels.iter().filter(|l| l.as_str() == ": int").collect();
+    assert!(
+        int_hints.len() >= 2,
+        "expected at least two ': int' decltype hints, got: {labels:?}"
+    );
+}

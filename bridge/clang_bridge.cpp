@@ -259,9 +259,14 @@ static std::string prettySignature(const NamedDecl *ND, ASTContext &Ctx) {
             }
         }
     }
+    // Use the TemplateDecl for template functions/classes so the signature
+    // includes 'template<...>' parameters (clangd HV-3 pattern).
+    const NamedDecl *printND = ND;
+    if (const auto *TD = ND->getDescribedTemplate())
+        printND = TD;
     std::string sig;
     llvm::raw_string_ostream os(sig);
-    ND->print(os, PP);
+    printND->print(os, PP);
     return sig;
 }
 
@@ -948,6 +953,34 @@ public:
         hints.push_back(std::move(h));
         return true;
     }
+
+    // ── decltype() type hints (IH-16) ─────────────────────────────────────────
+    // Emit `: T` after `decltype(expr)` type specifiers, showing the resolved type.
+
+    bool VisitTypeLoc(TypeLoc TL) {
+        const auto *DT = dyn_cast<DecltypeType>(TL.getType());
+        if (!DT) return true;
+        QualType UT = DT->getUnderlyingType();
+        if (UT.isNull() || UT->isDependentType()) return true;
+        SourceLocation endLoc = TL.getSourceRange().getEnd();
+        if (!inViewport(endLoc)) return true;
+        auto p = SM.getPresumedLoc(SM.getSpellingLoc(endLoc));
+        if (!p.isValid()) return true;
+        unsigned tokLen = Lexer::MeasureTokenLength(
+            SM.getSpellingLoc(endLoc), SM, Ctx.getLangOpts());
+        PrintingPolicy PP(Ctx.getLangOpts());
+        PP.SuppressScope = 1;
+        PP.AnonymousTagLocations = 0;
+        std::string typeStr = UT.getAsString(PP);
+        if (typeStr.empty()) return true;
+        InlayHintEntry h;
+        h.line  = p.getLine();
+        h.col   = p.getColumn() + tokLen;
+        h.label = ": " + typeStr;
+        h.kind  = 1;
+        hints.push_back(std::move(h));
+        return true;
+    }
 };
 
 CB_InlayHintList *cb_inlay_hints(CB_TransUnit *tu,
@@ -1168,6 +1201,20 @@ public:
                 if (inToken(TL.getTemplateNameLoc(), TD->getName().size()))
                     found = TD;
             }
+        }
+        return true;
+    }
+
+    // SL-2: constructor call sites — `MyClass(args)` / `MyClass{args}`.
+    // CXXTemporaryObjectExpr (a subclass) also hits this visitor.
+    bool VisitCXXConstructExpr(CXXConstructExpr *E) {
+        if (!found) {
+            CXXConstructorDecl *ctor = E->getConstructor();
+            if (!ctor) return true;
+            StringRef className = ctor->getParent()->getName();
+            if (!className.empty() && E->getLocation().isValid() &&
+                inToken(E->getLocation(), className.size()))
+                found = ctor;
         }
         return true;
     }

@@ -28,6 +28,9 @@ Sorted by impact (visible artifacts first, missing features last).
 - HV-2: `UsingShadowDecl` followed to `getTargetDecl()` in `RefLocator`
 - SL-1: Constructor/destructor names handled in `DeclLocator` (`VisitNamedDecl` fallback)
 - `AnonymousTagLocations = 0` in all type-hint `PrintingPolicy` instances (prevents `(lambda at file:line)` in hints)
+- IH-16: `VisitTypeLoc` for `decltype(expr)` — emits `: T` after the `decltype(...)` specifier
+- SL-2: `VisitCXXConstructExpr` in `RefLocator` — constructor call sites now resolve to the constructor decl
+- HV-3: `prettySignature` calls `getDescribedTemplate()` so template functions/classes show `template<...>` in hover
 
 ---
 
@@ -43,30 +46,19 @@ Clangd emits `// varname` after closing `}` of long for/while/if/class/namespace
 Fix: `VisitForStmt`, `VisitWhileStmt`, `VisitIfStmt`, `VisitFunctionDecl`,
 `VisitTagDecl`, `VisitNamespaceDecl`.
 
-### IH-16 — No `decltype()` type hints
-Clangd's `VisitTypeLoc` catches `DecltypeType` and emits the underlying type.
-Fix: add `VisitTypeLoc` — `if (auto *DT = dyn_cast<DecltypeType>(TL.getType()))`
-then emit `: UnderlyingType` hint at `TL.getSourceRange().getEnd()`.
+### IH-14 — No designator hints
+Clangd emits `.field =` before each element of an undesignated aggregate init.
+Fix: `VisitInitListExpr` + `VisitCXXParenListInitExpr` using
+`tidy::utils::getUnwrittenDesignators` (requires clang-tidy dep).
 
----
-
-## 🔵 Hover / symbol-lookup improvements
-
-### HV-3 — Template decl resolution in hover
-Clangd calls `D->getDescribedTemplate()` to get the template version of a
-function/class and `fillFunctionTypeAndParams` for a rich type layout.
-Our `prettySignature` just calls `ND->print()` which may omit template params.
-
-### SL-2 — `RefLocator` missing `CXXConstructorExpr` reference
-Constructor calls (`MyClass(...)`) are not `DeclRefExpr` or `MemberExpr`.
-Need `VisitCXXConstructExpr` in `RefLocator` to find the constructor decl.
+### IH-15 — No block-end hints
+Clangd emits `// varname` after closing `}` of long for/while/if/class/namespace blocks.
+Fix: `VisitForStmt`, `VisitWhileStmt`, `VisitIfStmt`, `VisitFunctionDecl`,
+`VisitTagDecl`, `VisitNamespaceDecl`.
 
 ---
 
 ## Implementation order suggestion (remaining)
 
-1. IH-16 (`decltype()` type hints via `VisitTypeLoc`) — straightforward  
-2. SL-2 (`VisitCXXConstructExpr` in `RefLocator`) — constructor hover/goto  
-3. HV-3 (template decl resolution in hover)  
-4. IH-15 (block-end hints)  
-5. IH-14 (designator hints — complex, needs clang-tidy dep)
+1. IH-15 (block-end hints)  
+2. IH-14 (designator hints — complex, needs clang-tidy dep)

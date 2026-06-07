@@ -52,3 +52,18 @@ fn hover_full_includes_definition_location() {
         "expected definition location in hover, got: {md}"
     );
 }
+
+#[test]
+fn hover_template_function_includes_template_params() {
+    // HV-3: hovering on a function template should show 'template<typename T>' in the signature.
+    let src = "template<typename T>\nT identity(T x) { return x; }";
+    let path = write_temp("cb_hf_tmpl.cpp", src);
+    let idx = Index::new();
+    let tu = idx.parse(path.to_str().unwrap(), "", &["-std=c++17"]).unwrap();
+
+    let md = hover::hover_full(&tu, 2, 3).expect("expected hover on template function");
+    assert!(
+        md.contains("template") && md.contains("typename"),
+        "expected template params in hover signature, got: {md}"
+    );
+}

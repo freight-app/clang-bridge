@@ -84,3 +84,22 @@ fn goto_resolves_to_definition_from_call_site() {
         .expect("expected definition from call site");
     assert_eq!(loc.line, 2, "expected definition on line 2, got {}", loc.line);
 }
+
+#[test]
+fn symbol_at_constructor_call_site() {
+    // Cursor on `MyClass` in `MyClass(1)` temporary object expression.
+    let src = "struct MyClass { MyClass(int x) {} };\nvoid f() { MyClass(1); }";
+    // Line 2: "void f() { MyClass(1); }"
+    //                     ^ col 12 = 'M' of 'MyClass'
+    let path = write_temp("cb_sym_ctor_call.cpp", src);
+    let idx = Index::new();
+    let tu = idx.parse(path.to_str().unwrap(), "", &["-std=c++17"]).unwrap();
+
+    let sym = tu.symbol_at(2, 12).expect("expected symbol at constructor call");
+    // Should resolve to the constructor (name = "MyClass::MyClass" or just "MyClass")
+    assert!(
+        sym.name().contains("MyClass"),
+        "expected constructor symbol containing 'MyClass', got '{}'",
+        sym.name()
+    );
+}
