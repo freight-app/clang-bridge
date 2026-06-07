@@ -32,18 +32,10 @@ Sorted by impact (visible artifacts first, missing features last).
 - SL-2: `VisitCXXConstructExpr` in `RefLocator` — constructor call sites now resolve to the constructor decl
 - HV-3: `prettySignature` calls `getDescribedTemplate()` so template functions/classes show `template<...>` in hover
 - IH-15: Block-end hints — `addBlockEndHint` + `markBlockEnd` helpers; visitors for `FunctionDecl`, `ForStmt`, `CXXForRangeStmt`, `WhileStmt`, `SwitchStmt`, `IfStmt` (with else-chain tracking), `TagDecl`, `NamespaceDecl`; min line limit 10; kind 2 in bridge → LSP kind 4 in Clang.rs
+- IH-14: Designator hints — `VisitInitListExpr` handles array (`[N]=`) and record (`.field =`) aggregates; syntactic form only; skips `DesignatedInitExpr`, unnamed bitfields, same-name suppression; bridge kind 3 → LSP kind 0 (None) in Clang.rs
 
 ---
 
-## 🟢 Missing features (not wrong, just absent)
+## ✅ All known alignment items complete
 
-### IH-14 — No designator hints
-Clangd emits `.field =` before each element of an undesignated aggregate init.
-Fix: `VisitInitListExpr` + `VisitCXXParenListInitExpr` using
-`tidy::utils::getUnwrittenDesignators` (requires clang-tidy dep or inline implementation).
-
----
-
-## Implementation order suggestion (remaining)
-
-1. IH-14 (designator hints — complex, needs clang-tidy dep or significant inline work)
+`scripts/lsp_hints_compare.py` reports 28/28 hints match clangd on `examples/cpp/hello`.

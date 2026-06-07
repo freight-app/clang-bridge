@@ -852,6 +852,81 @@ public:
         return true;
     }
 
+    // ── Designator hints for aggregate initializer lists (IH-14) ────────────────
+    // For undesignated brace-init-lists, emit `.field =` (record) or `[N]=`
+    // (array) before each element, matching clangd's VisitInitListExpr behaviour.
+
+    bool VisitInitListExpr(InitListExpr *ILE) {
+        // Process only the syntactic (user-written) form; the semantic form has
+        // Clang-synthesised padding/base-class slots that don't map to user text.
+        if (!ILE->isSyntacticForm()) return true;
+        unsigned nInits = ILE->getNumInits();
+        if (nInits == 0) return true;
+
+        QualType ILEType = ILE->getType().getCanonicalType();
+
+        // ── Array aggregate: [0]=, [1]=, … ────────────────────────────────────
+        if (ILEType->isArrayType()) {
+            for (unsigned i = 0; i < nInits; ++i) {
+                const Expr *init = ILE->getInit(i);
+                if (isa<DesignatedInitExpr>(init)) continue;
+                SourceLocation loc = SM.getSpellingLoc(init->getBeginLoc());
+                if (!inViewport(loc)) continue;
+                auto p = SM.getPresumedLoc(loc);
+                if (!p.isValid()) continue;
+                InlayHintEntry h;
+                h.line  = p.getLine();
+                h.col   = p.getColumn();
+                h.label = "[" + std::to_string(i) + "]=";
+                h.kind  = 3;
+                hints.push_back(std::move(h));
+            }
+            return true;
+        }
+
+        // ── Record aggregate: .fieldName = … ──────────────────────────────────
+        const RecordDecl *RD = nullptr;
+        if (const auto *RT = ILEType->getAs<RecordType>())
+            RD = RT->getDecl();
+        if (!RD) return true;
+        // Only aggregate class/struct types get designator hints.
+        if (const auto *CRD = dyn_cast<CXXRecordDecl>(RD))
+            if (!CRD->isAggregate()) return true;
+
+        auto field_it = RD->field_begin();
+        for (unsigned i = 0; i < nInits; ++i) {
+            // Advance past anonymous/unnamed bitfields — they're not user-visible.
+            while (field_it != RD->field_end() &&
+                   (field_it->isUnnamedBitField() || field_it->getName().empty()))
+                ++field_it;
+            if (field_it == RD->field_end()) break;
+
+            const Expr *init = ILE->getInit(i);
+            if (isa<DesignatedInitExpr>(init)) { ++field_it; continue; }
+
+            StringRef fieldName = field_it->getName();
+            // Suppress when the init value is spelled the same as the field name,
+            // matching clangd's getSpelledIdentifier-based suppression.
+            if (!fieldName.empty() && getSpelledIdentifier(init) == fieldName) {
+                ++field_it; continue;
+            }
+
+            SourceLocation loc = SM.getSpellingLoc(init->getBeginLoc());
+            if (!inViewport(loc)) { ++field_it; continue; }
+            auto p = SM.getPresumedLoc(loc);
+            if (!p.isValid()) { ++field_it; continue; }
+
+            InlayHintEntry h;
+            h.line  = p.getLine();
+            h.col   = p.getColumn();
+            h.label = "." + fieldName.str() + " =";
+            h.kind  = 3;
+            hints.push_back(std::move(h));
+            ++field_it;
+        }
+        return true;
+    }
+
     // ── Deduced return-type hints ─────────────────────────────────────────────
     // Emit `-> T` after the closing `)` of a function whose return type is
     // deduced (written as `auto`) and has no explicit trailing return.
