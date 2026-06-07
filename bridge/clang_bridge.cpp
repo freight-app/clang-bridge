@@ -669,6 +669,11 @@ public:
         const FunctionDecl *FD = E->getDirectCallee();
         if (!FD) return true;
 
+        // Skip calls to system-library functions: their parameter names are
+        // implementation-internal identifiers like __x, _Val, _Tp that are
+        // meaningless to the user and produce nonsensical hints.
+        if (SM.isInSystemHeader(FD->getLocation())) return true;
+
         auto pbegin = FD->param_begin();
         auto pend   = FD->param_end();
         unsigned i = 0;
@@ -676,7 +681,10 @@ public:
             if (pbegin + i >= pend) break;
             const ParmVarDecl *PD = *(pbegin + i);
             ++i;
-            if (PD->getName().empty()) continue;
+            // Also skip individual params with internal names (single leading
+            // underscore or double underscore — reserved for implementations).
+            StringRef pname = PD->getName();
+            if (pname.empty() || pname.starts_with("_")) continue;
             if (!inViewport(arg->getBeginLoc())) continue;
 
             // Suppress the hint when the argument is already the same name
