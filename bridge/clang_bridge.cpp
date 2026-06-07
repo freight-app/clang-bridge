@@ -10,6 +10,7 @@
 #include <clang/AST/RecursiveASTVisitor.h>
 #include <clang/AST/TemplateName.h>
 #include <clang/AST/TypeLoc.h>
+#include <clang/Basic/Builtins.h>
 #include <clang/Basic/Diagnostic.h>
 #include <clang/Basic/SourceLocation.h>
 #include <clang/Basic/SourceManager.h>
@@ -237,11 +238,14 @@ static std::string declKind(const NamedDecl *D) {
 }
 
 static std::string prettySignature(const NamedDecl *ND, ASTContext &Ctx) {
-    PrintingPolicy PP(Ctx.getLangOpts());
-    PP.SuppressScope = 0;
-    PP.SuppressTagKeyword = 0;
-    // TerseOutput suppresses function bodies so hover shows only the prototype.
-    PP.TerseOutput = 1;
+    // Start from the AST context's policy (inherits C++ SuppressTagKeyword=true
+    // and other language-appropriate defaults) rather than a blank policy.
+    PrintingPolicy PP = Ctx.getPrintingPolicy();
+    // Match clangd's getPrintingPolicy() from Hover.cpp.
+    PP.TerseOutput = 1;                         // prototype only, no function body
+    PP.PolishForDeclaration = 1;                // clean declaration output
+    PP.ConstantsAsWritten = 1;                  // show literal values as written
+    PP.SuppressTemplateArgsInCXXConstructors = 1; // less noise in ctor hints
     std::string sig;
     llvm::raw_string_ostream os(sig);
     ND->print(os, PP);
@@ -656,6 +660,53 @@ public:
 
     bool shouldVisitTemplateInstantiations() const { return false; }
 
+    // ── Clangd-aligned helpers ────────────────────────────────────────────────
+
+    // Returns true for `expr.operator()` and lambda calls (functor pattern).
+    static bool isFunctionObjectCallExpr(CallExpr *E) {
+        if (auto *OC = dyn_cast<CXXOperatorCallExpr>(E))
+            return OC->getOperator() == OO_Call;
+        return false;
+    }
+
+    // If E is a single unqualified identifier (or implicit member access),
+    // return its name — used to suppress hints when arg name == param name.
+    // Mirrors clangd's getSpelledIdentifier in InlayHints.cpp.
+    static StringRef getSpelledIdentifier(const Expr *E) {
+        E = E->IgnoreUnlessSpelledInSource();
+        if (auto *DRE = dyn_cast<DeclRefExpr>(E))
+            if (!DRE->getQualifier())
+                return safeDeclName(DRE->getDecl());
+        if (auto *ME = dyn_cast<MemberExpr>(E))
+            if (!ME->getQualifier() && ME->isImplicitAccess())
+                return safeDeclName(ME->getMemberDecl());
+        return {};
+    }
+
+    // Suppress hints for std::move / forward / addressof / as_const /
+    // move_if_noexcept — their parameter names add no information.
+    static bool isSimpleBuiltin(const FunctionDecl *FD) {
+        switch (FD->getBuiltinID()) {
+            case Builtin::BIaddressof:
+            case Builtin::BIas_const:
+            case Builtin::BIforward:
+            case Builtin::BImove:
+            case Builtin::BImove_if_noexcept:
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    // Suppress hints for single-arg functions named set* where the part after
+    // "set" matches the (stripped) parameter name.  E.g. setFoo(foo) → no hint.
+    static bool isSetter(const FunctionDecl *FD, StringRef pname) {
+        if (FD->getNumParams() != 1 || pname.empty()) return false;
+        StringRef fname = safeDeclName(FD);
+        if (!fname.starts_with_insensitive("set")) return false;
+        return fname.drop_front(3).ltrim("_").equals_insensitive(pname);
+    }
+
     bool inViewport(SourceLocation loc) const {
         loc = SM.getSpellingLoc(loc);
         // Only emit hints for tokens that live in the main translation unit file.
@@ -670,41 +721,45 @@ public:
     // ── Parameter name hints at call sites ────────────────────────────────────
 
     bool VisitCallExpr(CallExpr *E) {
-        // Skip operator-call expressions — they clutter the view.
-        if (isa<CXXOperatorCallExpr>(E)) return true;
+        // Skip operator calls, but allow functor/lambda operator() calls.
+        if (isa<CXXOperatorCallExpr>(E) && !isFunctionObjectCallExpr(E))
+            return true;
+        // User-defined literals carry no useful parameter info.
+        if (isa<UserDefinedLiteral>(E)) return true;
 
         const FunctionDecl *FD = E->getDirectCallee();
         if (!FD) return true;
-
-        // Skip calls to system-library functions: their parameter names are
-        // implementation-internal identifiers like __x, _Val, _Tp that are
-        // meaningless to the user and produce nonsensical hints.
         if (SM.isInSystemHeader(FD->getLocation())) return true;
+        if (isSimpleBuiltin(FD)) return true;
 
-        auto pbegin = FD->param_begin();
-        auto pend   = FD->param_end();
+        // Build stripped param names up front for the setter check.
+        // Strip ALL leading underscores (clangd strips them rather than skipping).
+        SmallVector<StringRef, 8> pnames;
+        for (const ParmVarDecl *PD : FD->parameters()) {
+            StringRef n = PD->getName();
+            n = n.ltrim("_");
+            pnames.push_back(n);
+        }
+        if (!pnames.empty() && isSetter(FD, pnames[0])) return true;
+
         unsigned i = 0;
-        for (auto *arg : E->arguments()) {
-            if (pbegin + i >= pend) break;
-            const ParmVarDecl *PD = *(pbegin + i);
-            ++i;
-            // Also skip individual params with internal names (single leading
-            // underscore or double underscore — reserved for implementations).
-            StringRef pname = PD->getName();
-            if (pname.empty() || pname.starts_with("_")) continue;
+        for (const Expr *arg : E->arguments()) {
+            // Pack-expansion breaks the 1:1 arg↔param mapping; stop here.
+            if (isa<PackExpansionExpr>(arg)) break;
+            if (i >= pnames.size()) break;
+            StringRef pname = pnames[i++];
+            if (pname.empty()) continue;
             if (!inViewport(arg->getBeginLoc())) continue;
 
-            // Suppress the hint when the argument is already the same name
-            // (e.g. `f(x)` where param is also named x).
-            if (auto *DRE = dyn_cast<DeclRefExpr>(arg->IgnoreParenImpCasts()))
-                if (safeDeclName(DRE->getDecl()) == PD->getName()) continue;
+            // Suppress when argument is spelled identically to the param name.
+            if (getSpelledIdentifier(arg) == pname) continue;
 
             auto p = SM.getPresumedLoc(SM.getSpellingLoc(arg->getBeginLoc()));
             if (!p.isValid()) continue;
             InlayHintEntry h;
             h.line  = p.getLine();
             h.col   = p.getColumn();
-            h.label = PD->getNameAsString() + ":";
+            h.label = (pname + ":").str();
             h.kind  = 0;
             hints.push_back(std::move(h));
         }
@@ -713,41 +768,32 @@ public:
 
     // ── Parameter name hints at constructor call sites ────────────────────────
     // VisitCallExpr only covers CallExpr nodes; CXXConstructExpr is a separate
-    // AST node type and must be handled here.  Pattern follows clangd's
-    // VisitCXXConstructExpr / processCall in InlayHints.cpp.
+    // AST node type.  Pattern follows clangd's VisitCXXConstructExpr / processCall.
 
     bool VisitCXXConstructExpr(CXXConstructExpr *E) {
-        // Only hint explicit paren/brace calls — skip aggregate or implicit init.
         if (!E->getParenOrBraceRange().isValid()) return true;
         if (E->isStdInitListInitialization()) return true;
 
         const CXXConstructorDecl *CD = E->getConstructor();
         if (!CD) return true;
         if (SM.isInSystemHeader(CD->getLocation())) return true;
+        if (CD->isCopyOrMoveConstructor()) return true;
 
-        // Copy/move constructors carry no useful parameter name information.
-        if (CD->isCopyConstructor() || CD->isMoveConstructor()) return true;
-
-        auto pbegin = CD->param_begin();
-        auto pend   = CD->param_end();
         unsigned i = 0;
-        for (auto *arg : E->arguments()) {
-            if (pbegin + i >= pend) break;
-            const ParmVarDecl *PD = *(pbegin + i);
-            ++i;
-            StringRef pname = PD->getName();
-            if (pname.empty() || pname.starts_with("_")) continue;
+        for (const Expr *arg : E->arguments()) {
+            if (isa<PackExpansionExpr>(arg)) break;
+            if (i >= CD->getNumParams()) break;
+            StringRef pname = CD->getParamDecl(i++)->getName().ltrim("_");
+            if (pname.empty()) continue;
             if (!inViewport(arg->getBeginLoc())) continue;
-
-            if (auto *DRE = dyn_cast<DeclRefExpr>(arg->IgnoreParenImpCasts()))
-                if (safeDeclName(DRE->getDecl()) == PD->getName()) continue;
+            if (getSpelledIdentifier(arg) == pname) continue;
 
             auto p = SM.getPresumedLoc(SM.getSpellingLoc(arg->getBeginLoc()));
             if (!p.isValid()) continue;
             InlayHintEntry h;
             h.line  = p.getLine();
             h.col   = p.getColumn();
-            h.label = PD->getNameAsString() + ":";
+            h.label = (pname + ":").str();
             h.kind  = 0;
             hints.push_back(std::move(h));
         }
@@ -758,27 +804,52 @@ public:
 
     bool VisitVarDecl(VarDecl *D) {
         if (SM.isInSystemHeader(D->getLocation())) return true;
+
+        // Structured bindings: `auto [x, y] = foo()`.
+        // Emit a per-binding hint using canonical type (avoids
+        // `tuple_element<I,A>::type` noise).  Clangd pattern.
+        if (auto *DD = dyn_cast<DecompositionDecl>(D)) {
+            PrintingPolicy PP(Ctx.getLangOpts());
+            PP.SuppressScope = 1;
+            for (BindingDecl *BD : DD->bindings()) {
+                QualType BT = BD->getType();
+                if (BT.isNull() || BT->isDependentType()) continue;
+                if (!inViewport(BD->getLocation())) continue;
+                auto bploc = SM.getPresumedLoc(SM.getSpellingLoc(BD->getLocation()));
+                if (!bploc.isValid()) continue;
+                StringRef bname = BD->getName();
+                if (bname.empty()) continue;
+                InlayHintEntry h;
+                h.line  = bploc.getLine();
+                // Place after the binding name, not before (HintSide::Right).
+                h.col   = bploc.getColumn() + (uint32_t)bname.size();
+                h.label = ": " + BT.getCanonicalType().getAsString(PP);
+                h.kind  = 1;
+                hints.push_back(std::move(h));
+            }
+            return true;
+        }
+
         if (!inViewport(D->getLocation())) return true;
-        if (isa<ParmVarDecl>(D)) return true; // parameters are always typed
+        if (isa<ParmVarDecl>(D)) return true;
 
-        // Check if the variable was declared with `auto`.
-        const AutoType *AT = D->getTypeSourceInfo()
-                               ->getType()->getContainedAutoType();
-        if (!AT) return true;
-
+        // TypeSourceInfo holds the written `auto`; D->getType() holds the deduced type.
+        if (!D->getTypeSourceInfo()->getType()->getContainedAutoType()) return true;
         QualType deduced = D->getType();
-        if (deduced->isUndeducedAutoType()) return true; // not yet deduced
+        if (deduced->isUndeducedAutoType()) return true;
 
         PrintingPolicy PP(Ctx.getLangOpts());
-        PP.SuppressScope = 1; // keep it concise
+        PP.SuppressScope = 1;
         std::string typeStr = deduced.getAsString(PP);
         if (typeStr == "auto" || typeStr.empty()) return true;
 
         auto p = SM.getPresumedLoc(D->getLocation());
         if (!p.isValid()) return true;
+        StringRef vname = D->getName();
         InlayHintEntry h;
         h.line  = p.getLine();
-        h.col   = p.getColumn();
+        // Place after the variable name (HintSide::Right), not before.
+        h.col   = p.getColumn() + (uint32_t)vname.size();
         h.label = ": " + typeStr;
         h.kind  = 1;
         hints.push_back(std::move(h));
@@ -792,6 +863,20 @@ CB_InlayHintList *cb_inlay_hints(CB_TransUnit *tu,
     ASTContext &Ctx = tu->ast->getASTContext();
     InlayHintVisitor V(Ctx, list->entries, start_line, end_line);
     V.TraverseDecl(Ctx.getTranslationUnitDecl());
+
+    // Sort by position then deduplicate — explicit template instantiations can
+    // produce identical hints at the same location.
+    auto &e = list->entries;
+    std::sort(e.begin(), e.end(), [](const InlayHintEntry &a, const InlayHintEntry &b) {
+        if (a.line != b.line) return a.line < b.line;
+        if (a.col  != b.col)  return a.col  < b.col;
+        return a.label < b.label;
+    });
+    e.erase(std::unique(e.begin(), e.end(), [](const InlayHintEntry &a,
+                                               const InlayHintEntry &b) {
+        return a.line == b.line && a.col == b.col && a.label == b.label;
+    }), e.end());
+
     return list;
 }
 
