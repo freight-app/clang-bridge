@@ -31,6 +31,7 @@ Sorted by impact (visible artifacts first, missing features last).
 - IH-16: `VisitTypeLoc` for `decltype(expr)` — emits `: T` after the `decltype(...)` specifier
 - SL-2: `VisitCXXConstructExpr` in `RefLocator` — constructor call sites now resolve to the constructor decl
 - HV-3: `prettySignature` calls `getDescribedTemplate()` so template functions/classes show `template<...>` in hover
+- IH-15: Block-end hints — `addBlockEndHint` + `markBlockEnd` helpers; visitors for `FunctionDecl`, `ForStmt`, `CXXForRangeStmt`, `WhileStmt`, `SwitchStmt`, `IfStmt` (with else-chain tracking), `TagDecl`, `NamespaceDecl`; min line limit 10; kind 2 in bridge → LSP kind 4 in Clang.rs
 
 ---
 
@@ -39,26 +40,10 @@ Sorted by impact (visible artifacts first, missing features last).
 ### IH-14 — No designator hints
 Clangd emits `.field =` before each element of an undesignated aggregate init.
 Fix: `VisitInitListExpr` + `VisitCXXParenListInitExpr` using
-`tidy::utils::getUnwrittenDesignators` (requires clang-tidy dep).
-
-### IH-15 — No block-end hints
-Clangd emits `// varname` after closing `}` of long for/while/if/class/namespace blocks.
-Fix: `VisitForStmt`, `VisitWhileStmt`, `VisitIfStmt`, `VisitFunctionDecl`,
-`VisitTagDecl`, `VisitNamespaceDecl`.
-
-### IH-14 — No designator hints
-Clangd emits `.field =` before each element of an undesignated aggregate init.
-Fix: `VisitInitListExpr` + `VisitCXXParenListInitExpr` using
-`tidy::utils::getUnwrittenDesignators` (requires clang-tidy dep).
-
-### IH-15 — No block-end hints
-Clangd emits `// varname` after closing `}` of long for/while/if/class/namespace blocks.
-Fix: `VisitForStmt`, `VisitWhileStmt`, `VisitIfStmt`, `VisitFunctionDecl`,
-`VisitTagDecl`, `VisitNamespaceDecl`.
+`tidy::utils::getUnwrittenDesignators` (requires clang-tidy dep or inline implementation).
 
 ---
 
 ## Implementation order suggestion (remaining)
 
-1. IH-15 (block-end hints)  
-2. IH-14 (designator hints — complex, needs clang-tidy dep)
+1. IH-14 (designator hints — complex, needs clang-tidy dep or significant inline work)

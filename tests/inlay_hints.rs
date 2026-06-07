@@ -83,3 +83,40 @@ fn decltype_type_hint() {
         "expected at least two ': int' decltype hints, got: {labels:?}"
     );
 }
+
+#[test]
+fn block_end_hint_for_long_function() {
+    // A function spanning >= 10 lines should get a block-end hint.
+    let src = "void longfn() {\n    int a = 1;\n    int b = 2;\n    int c = 3;\n    int d = 4;\n    int e = 5;\n    int f = 6;\n    int g = 7;\n    int h = 8;\n    int i = 9;\n}";
+    let path = write_temp("cb_inlay_blockend.cpp", src);
+    let idx = Index::new();
+    let tu = idx.parse(path.to_str().unwrap(), "", &["-std=c++17"]).unwrap();
+
+    let hints = inlay::inlay_hints(&tu, 1, 11);
+    let block_end_hints: Vec<_> = hints.iter().filter(|h| h.kind == 2).collect();
+    assert!(
+        !block_end_hints.is_empty(),
+        "expected a block-end hint for 'longfn', got none"
+    );
+    let lbl = &block_end_hints[0].label;
+    assert!(
+        lbl.contains("longfn"),
+        "block-end hint label should contain 'longfn', got: {lbl}"
+    );
+}
+
+#[test]
+fn no_block_end_hint_for_short_function() {
+    // A function spanning < 10 lines should NOT get a block-end hint.
+    let src = "int add(int a, int b) {\n    return a + b;\n}";
+    let path = write_temp("cb_inlay_noblockend.cpp", src);
+    let idx = Index::new();
+    let tu = idx.parse(path.to_str().unwrap(), "", &["-std=c++17"]).unwrap();
+
+    let hints = inlay::inlay_hints(&tu, 1, 3);
+    let block_end_hints: Vec<_> = hints.iter().filter(|h| h.kind == 2).collect();
+    assert!(
+        block_end_hints.is_empty(),
+        "expected no block-end hint for short function, got: {block_end_hints:?}"
+    );
+}

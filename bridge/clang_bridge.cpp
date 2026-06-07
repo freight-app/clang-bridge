@@ -28,6 +28,7 @@
 #include <clang/Tooling/CompilationDatabase.h>
 #include <clang/Tooling/Core/Replacement.h>
 #include <clang/Tooling/Tooling.h>
+#include <llvm/ADT/DenseSet.h>
 #include <llvm/Support/raw_ostream.h>
 #include <llvm/Support/VirtualFileSystem.h>
 
@@ -874,12 +875,17 @@ public:
 
     bool VisitFunctionDecl(FunctionDecl *D) {
         if (D->isImplicit()) return true;
-        // Only hint non-trailing deduced return types.
+        // Return-type hint (non-trailing deduced only).
         auto *FPT = dyn_cast<FunctionProtoType>(D->getType().getTypePtr());
-        if (FPT && FPT->hasTrailingReturn()) return true;
-        auto FTL = D->getFunctionTypeLoc();
-        if (!FTL) return true;
-        addReturnTypeHint(D, FTL.getRParenLoc());
+        if (!(FPT && FPT->hasTrailingReturn())) {
+            if (auto FTL = D->getFunctionTypeLoc())
+                addReturnTypeHint(D, FTL.getRParenLoc());
+        }
+        // Block-end hint for function definitions.
+        if (D->isThisDeclarationADefinition()) {
+            if (const Stmt *body = D->getBody())
+                addBlockEndHint(body->getSourceRange(), "", blockNameForFn(D), "");
+        }
         return true;
     }
 
@@ -893,6 +899,141 @@ public:
             anchor = FTL.getRParenLoc();               // after `)`
         if (anchor.isValid())
             addReturnTypeHint(D, anchor);
+        return true;
+    }
+
+    // ── Block-end hints ──────────────────────────────────────────────────────────
+    // Emit ` // label` after closing `}` of blocks spanning ≥10 lines.
+    // Pattern follows clangd VisitForStmt / VisitTagDecl / VisitNamespaceDecl.
+
+    static constexpr unsigned kBlockEndMinLines = 10;
+    llvm::DenseSet<const IfStmt *> elseIfSet;
+
+    static std::string blockNameForFn(const FunctionDecl *D) {
+        DeclarationName DN = D->getDeclName();
+        if (DN.isIdentifier())
+            return DN.getAsIdentifierInfo()->getName().str();
+        if (auto *CD = dyn_cast<CXXConstructorDecl>(D))
+            return CD->getParent()->getName().str();
+        if (auto *DD = dyn_cast<CXXDestructorDecl>(D))
+            return ("~" + DD->getParent()->getName()).str();
+        std::string s;
+        llvm::raw_string_ostream os(s);
+        DN.print(os, PrintingPolicy(D->getASTContext().getLangOpts()));
+        return s;
+    }
+
+    static std::string summarizeCondition(const Expr *E) {
+        if (!E) return "";
+        E = E->IgnoreImplicit();
+        if (auto *DRE = dyn_cast<DeclRefExpr>(E))
+            return safeDeclName(DRE->getFoundDecl()).str();
+        if (auto *ME = dyn_cast<MemberExpr>(E))
+            return safeDeclName(ME->getMemberDecl()).str();
+        if (auto *CE = dyn_cast<CallExpr>(E)) {
+            std::string s = summarizeCondition(CE->getCallee());
+            if (!s.empty()) return s + (CE->getNumArgs() == 0 ? "()" : "(...)");
+        }
+        return "";
+    }
+
+    void addBlockEndHint(SourceRange braceRange, StringRef declPrefix,
+                         StringRef name, StringRef optPunct) {
+        if (MainFileBuf.empty()) return;
+        SourceLocation beginLoc = SM.getFileLoc(braceRange.getBegin());
+        SourceLocation endLoc   = SM.getFileLoc(braceRange.getEnd());
+        auto [bFID, bOff] = SM.getDecomposedLoc(beginLoc);
+        auto [eFID, eOff] = SM.getDecomposedLoc(endLoc);
+        if (bFID != SM.getMainFileID() || eFID != SM.getMainFileID()) return;
+
+        StringRef restOfLine = MainFileBuf.substr(eOff).split('\n').first;
+        if (!restOfLine.starts_with("}")) return;
+        StringRef trailing = restOfLine.drop_front().trim();
+        if (!trailing.empty() && trailing != optPunct) return;
+
+        unsigned beginLine = SM.getLineNumber(bFID, bOff);
+        unsigned endLine   = SM.getLineNumber(eFID, eOff);
+        if (endLine < beginLine + kBlockEndMinLines - 1) return;
+
+        std::string label = declPrefix.str();
+        if (!label.empty() && !name.empty()) label += ' ';
+        label += name.str();
+        if (label.empty() || label.size() > 60) return;
+        label = " // " + label;
+
+        auto p = SM.getPresumedLoc(endLoc);
+        if (!p.isValid()) return;
+        if ((unsigned)p.getLine() < start_line || (unsigned)p.getLine() > end_line) return;
+
+        uint32_t closingLen = 1 + (uint32_t)(trailing.empty() ? 0 : optPunct.size());
+        InlayHintEntry h;
+        h.line  = (uint32_t)p.getLine();
+        h.col   = (uint32_t)p.getColumn() + closingLen;
+        h.label = std::move(label);
+        h.kind  = 2;
+        hints.push_back(std::move(h));
+    }
+
+    void markBlockEnd(const Stmt *body, StringRef lbl, StringRef name = "") {
+        if (auto *CS = dyn_cast_or_null<CompoundStmt>(body))
+            addBlockEndHint(CS->getSourceRange(), lbl, name, "");
+    }
+
+    bool VisitForStmt(ForStmt *S) {
+        std::string name;
+        if (auto *DS = dyn_cast_or_null<DeclStmt>(S->getInit());
+                DS && DS->isSingleDecl())
+            name = safeDeclName(cast<NamedDecl>(DS->getSingleDecl())).str();
+        else
+            name = summarizeCondition(S->getCond());
+        markBlockEnd(S->getBody(), "for", name);
+        return true;
+    }
+
+    bool VisitCXXForRangeStmt(CXXForRangeStmt *S) {
+        markBlockEnd(S->getBody(), "for",
+                     safeDeclName(S->getLoopVariable()).str());
+        return true;
+    }
+
+    bool VisitWhileStmt(WhileStmt *S) {
+        markBlockEnd(S->getBody(), "while", summarizeCondition(S->getCond()));
+        return true;
+    }
+
+    bool VisitSwitchStmt(SwitchStmt *S) {
+        markBlockEnd(S->getBody(), "switch", summarizeCondition(S->getCond()));
+        return true;
+    }
+
+    bool VisitIfStmt(IfStmt *S) {
+        if (auto *elseIf = dyn_cast_or_null<IfStmt>(S->getElse()))
+            elseIfSet.insert(elseIf);
+        auto *endCS = dyn_cast<CompoundStmt>(
+            S->getElse() ? S->getElse() : S->getThen());
+        if (endCS) {
+            std::string name = elseIfSet.count(S) ? "" : summarizeCondition(S->getCond());
+            addBlockEndHint({S->getThen()->getBeginLoc(), endCS->getRBracLoc()},
+                            "if", name, "");
+        }
+        return true;
+    }
+
+    bool VisitTagDecl(TagDecl *D) {
+        if (!D->isThisDeclarationADefinition()) return true;
+        std::string prefix = D->getKindName().str();
+        if (auto *ED = dyn_cast<EnumDecl>(D)) {
+            if (ED->isScoped())
+                prefix += ED->isScopedUsingClassTag() ? " class" : " struct";
+        }
+        addBlockEndHint(D->getBraceRange(), prefix,
+                        safeDeclName(D).str(), ";");
+        return true;
+    }
+
+    bool VisitNamespaceDecl(NamespaceDecl *D) {
+        addBlockEndHint(D->getSourceRange(), "namespace",
+                        safeDeclName(D).str(), "");
         return true;
     }
 
