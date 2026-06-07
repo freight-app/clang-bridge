@@ -775,7 +775,6 @@ public:
 
         const FunctionDecl *FD = E->getDirectCallee();
         if (!FD) return true;
-        if (SM.isInSystemHeader(FD->getLocation())) return true;
         if (isSimpleBuiltin(FD)) return true;
 
         // Build stripped param names up front for the setter check.
@@ -788,8 +787,13 @@ public:
         }
         if (!pnames.empty() && isSetter(FD, pnames[0])) return true;
 
+        // For functor/lambda operator() calls the first argument is the implicit
+        // object (the functor/lambda variable itself); skip it so param[0] aligns
+        // with the first user-supplied argument, matching clangd's behaviour.
+        bool skipObject = isFunctionObjectCallExpr(E);
         unsigned i = 0;
         for (const Expr *arg : E->arguments()) {
+            if (skipObject) { skipObject = false; continue; }
             // Pack-expansion breaks the 1:1 arg↔param mapping; stop here.
             if (isa<PackExpansionExpr>(arg)) break;
             if (i >= pnames.size()) break;
@@ -824,7 +828,6 @@ public:
 
         const CXXConstructorDecl *CD = E->getConstructor();
         if (!CD) return true;
-        if (SM.isInSystemHeader(CD->getLocation())) return true;
         if (CD->isCopyOrMoveConstructor()) return true;
 
         unsigned i = 0;
@@ -1081,6 +1084,15 @@ public:
         PP.AnonymousTagLocations = 0;
         std::string typeStr = deduced.getAsString(PP);
         if (typeStr == "auto" || typeStr.empty()) return true;
+        // Resolve type-trait aliases (e.g. remove_cv_t<double> → double).
+        if (typeStr.find("_t<") != std::string::npos) {
+            std::string canon = deduced.getCanonicalType().getAsString(PP);
+            if (!canon.empty() && canon != "auto")
+                typeStr = canon;
+        }
+        // Suppress implementation-detail names (starting with __).
+        if (typeStr.size() >= 2 && typeStr[0] == '_' && typeStr[1] == '_')
+            return true;
 
         auto p = SM.getPresumedLoc(D->getLocation());
         if (!p.isValid()) return true;
