@@ -246,6 +246,19 @@ static std::string prettySignature(const NamedDecl *ND, ASTContext &Ctx) {
     PP.PolishForDeclaration = 1;                // clean declaration output
     PP.ConstantsAsWritten = 1;                  // show literal values as written
     PP.SuppressTemplateArgsInCXXConstructors = 1; // less noise in ctor hints
+    // Suppress huge initializers: if a VarDecl's init spans more than 200
+    // characters in source, omit it from the hover card (clangd pattern, HV-1).
+    if (auto *VD = dyn_cast<VarDecl>(ND)) {
+        if (const Expr *IE = VD->getInit()) {
+            const SourceManager &SM = Ctx.getSourceManager();
+            SourceLocation B = IE->getBeginLoc(), E = IE->getEndLoc();
+            if (B.isValid() && E.isValid()) {
+                auto boff = SM.getFileOffset(SM.getSpellingLoc(B));
+                auto eoff = SM.getFileOffset(SM.getSpellingLoc(E));
+                if (eoff > boff + 200) PP.SuppressInitializers = 1;
+            }
+        }
+    }
     std::string sig;
     llvm::raw_string_ostream os(sig);
     ND->print(os, PP);
@@ -653,10 +666,18 @@ public:
     std::vector<InlayHintEntry> &hints;
     uint32_t start_line, end_line;
 
+    // Raw source buffer for the main file — used by isPrecededByParamNameComment.
+    // Non-owning view; valid for the lifetime of the ASTUnit.
+    StringRef MainFileBuf;
+
     InlayHintVisitor(ASTContext &C, std::vector<InlayHintEntry> &out,
                      uint32_t sl, uint32_t el)
         : Ctx(C), SM(C.getSourceManager()), hints(out),
-          start_line(sl), end_line(el) {}
+          start_line(sl), end_line(el) {
+        bool Invalid = false;
+        StringRef Buf = SM.getBufferData(SM.getMainFileID(), &Invalid);
+        MainFileBuf = Invalid ? StringRef{} : Buf;
+    }
 
     bool shouldVisitTemplateInstantiations() const { return false; }
 
@@ -696,6 +717,25 @@ public:
             default:
                 return false;
         }
+    }
+
+    // Suppress the hint when the argument is immediately preceded by a block
+    // comment whose content matches the parameter name.
+    // Pattern: `/* [=. ]* <paramName> [=. ]* */` right before the expression.
+    // Mirrors clangd's isPrecededByParamNameComment in InlayHints.cpp.
+    bool isPrecededByParamNameComment(const Expr *E, StringRef ParamName) const {
+        if (MainFileBuf.empty()) return false;
+        SourceLocation FileLoc = SM.getFileLoc(E->getBeginLoc());
+        auto [FID, Offset] = SM.getDecomposedLoc(FileLoc);
+        if (FID != SM.getMainFileID()) return false;
+        StringRef Before = MainFileBuf.substr(0, Offset).rtrim();
+        if (!Before.consume_back("*/")) return false;
+        llvm::StringLiteral Ignore = " =.";
+        Before     = Before.rtrim(Ignore);
+        ParamName  = ParamName.trim(Ignore);
+        if (!Before.consume_back(ParamName)) return false;
+        Before = Before.rtrim(Ignore);
+        return Before.ends_with("/*");
     }
 
     // Suppress hints for single-arg functions named set* where the part after
@@ -753,6 +793,8 @@ public:
 
             // Suppress when argument is spelled identically to the param name.
             if (getSpelledIdentifier(arg) == pname) continue;
+            // Suppress when a `/* paramName */` comment precedes the argument.
+            if (isPrecededByParamNameComment(arg, pname)) continue;
 
             auto p = SM.getPresumedLoc(SM.getSpellingLoc(arg->getBeginLoc()));
             if (!p.isValid()) continue;
@@ -787,6 +829,7 @@ public:
             if (pname.empty()) continue;
             if (!inViewport(arg->getBeginLoc())) continue;
             if (getSpelledIdentifier(arg) == pname) continue;
+            if (isPrecededByParamNameComment(arg, pname)) continue;
 
             auto p = SM.getPresumedLoc(SM.getSpellingLoc(arg->getBeginLoc()));
             if (!p.isValid()) continue;
@@ -797,6 +840,54 @@ public:
             h.kind  = 0;
             hints.push_back(std::move(h));
         }
+        return true;
+    }
+
+    // ── Deduced return-type hints ─────────────────────────────────────────────
+    // Emit `-> T` after the closing `)` of a function whose return type is
+    // deduced (written as `auto`) and has no explicit trailing return.
+    // Pattern follows clangd VisitFunctionDecl / addReturnTypeHint.
+
+    void addReturnTypeHint(FunctionDecl *D, SourceLocation anchorLoc) {
+        const AutoType *AT = D->getReturnType()->getContainedAutoType();
+        if (!AT || AT->getDeducedType().isNull()) return;
+        if (!inViewport(anchorLoc)) return;
+        QualType retType = D->getReturnType();
+        PrintingPolicy PP(Ctx.getLangOpts());
+        PP.SuppressScope = 1;
+        std::string typeStr = retType.getAsString(PP);
+        if (typeStr == "auto" || typeStr.empty()) return;
+        auto p = SM.getPresumedLoc(anchorLoc);
+        if (!p.isValid()) return;
+        InlayHintEntry h;
+        h.line  = p.getLine();
+        h.col   = p.getColumn() + 1; // one past the `)` or `]`
+        h.label = "-> " + typeStr;
+        h.kind  = 1;
+        hints.push_back(std::move(h));
+    }
+
+    bool VisitFunctionDecl(FunctionDecl *D) {
+        if (D->isImplicit()) return true;
+        // Only hint non-trailing deduced return types.
+        auto *FPT = dyn_cast<FunctionProtoType>(D->getType().getTypePtr());
+        if (FPT && FPT->hasTrailingReturn()) return true;
+        auto FTL = D->getFunctionTypeLoc();
+        if (!FTL) return true;
+        addReturnTypeHint(D, FTL.getRParenLoc());
+        return true;
+    }
+
+    bool VisitLambdaExpr(LambdaExpr *E) {
+        FunctionDecl *D = E->getCallOperator();
+        if (!D || E->hasExplicitResultType()) return true;
+        SourceLocation anchor;
+        if (!E->hasExplicitParameters())
+            anchor = E->getIntroducerRange().getEnd(); // after `]`
+        else if (auto FTL = D->getFunctionTypeLoc())
+            anchor = FTL.getRParenLoc();               // after `)`
+        if (anchor.isValid())
+            addReturnTypeHint(D, anchor);
         return true;
     }
 
@@ -811,6 +902,7 @@ public:
         if (auto *DD = dyn_cast<DecompositionDecl>(D)) {
             PrintingPolicy PP(Ctx.getLangOpts());
             PP.SuppressScope = 1;
+            PP.AnonymousTagLocations = 0; // print "(anonymous)" not "(lambda at file:line)"
             for (BindingDecl *BD : DD->bindings()) {
                 QualType BT = BD->getType();
                 if (BT.isNull() || BT->isDependentType()) continue;
@@ -840,6 +932,7 @@ public:
 
         PrintingPolicy PP(Ctx.getLangOpts());
         PP.SuppressScope = 1;
+        PP.AnonymousTagLocations = 0;
         std::string typeStr = deduced.getAsString(PP);
         if (typeStr == "auto" || typeStr.empty()) return true;
 
@@ -1032,6 +1125,9 @@ public:
     bool VisitDeclRefExpr(DeclRefExpr *E) {
         if (!found) {
             const NamedDecl *D = E->getFoundDecl();
+            // Follow using-shadow decls to the real target (HV-2).
+            if (auto *USD = dyn_cast<UsingShadowDecl>(D))
+                D = USD->getTargetDecl();
             if (inToken(E->getLocation(), safeDeclName(D).size()))
                 found = D;
         }
@@ -1094,16 +1190,24 @@ public:
     bool shouldVisitTemplateInstantiations() const { return false; }
 
     bool VisitNamedDecl(NamedDecl *ND) {
-        // Skip implicit nodes (compiler-generated ctors, dtors, etc.).
         if (ND->isImplicit()) return true;
-        // Skip system headers.
         if (SM.isInSystemHeader(ND->getLocation())) return true;
+
+        // For plain identifiers use safeDeclName.  For constructors / destructors
+        // the declaration name is the parent class name (SL-1).
         StringRef name = safeDeclName(ND);
+        if (name.empty()) {
+            if (auto *CD = dyn_cast<CXXConstructorDecl>(ND))
+                name = CD->getParent()->getName();
+            else if (auto *DD = dyn_cast<CXXDestructorDecl>(ND))
+                name = DD->getParent()->getName();
+            // Operators, conversions, etc. — not reachable by plain cursor hover.
+        }
         if (name.empty()) return true;
+
         auto ploc = SM.getPresumedLoc(ND->getLocation());
         if (!ploc.isValid()) return true;
         uint32_t startCol = (uint32_t)ploc.getColumn();
-        // Cursor must be within the token's character span (same as RefLocator).
         if ((uint32_t)ploc.getLine() == target_line &&
             target_col >= startCol &&
             target_col < startCol + (uint32_t)name.size())
