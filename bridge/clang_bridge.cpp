@@ -240,6 +240,8 @@ static std::string prettySignature(const NamedDecl *ND, ASTContext &Ctx) {
     PrintingPolicy PP(Ctx.getLangOpts());
     PP.SuppressScope = 0;
     PP.SuppressTagKeyword = 0;
+    // TerseOutput suppresses function bodies so hover shows only the prototype.
+    PP.TerseOutput = 1;
     std::string sig;
     llvm::raw_string_ostream os(sig);
     ND->print(os, PP);
@@ -1001,11 +1003,25 @@ public:
     DeclLocator(const SourceManager &SM, uint32_t l, uint32_t c)
         : SM(SM), target_line(l), target_col(c) {}
 
+    // Do not descend into template instantiations: their implicit members
+    // are attributed to the instantiation site in user code, which makes
+    // them look like user declarations on the same line and pollute results.
+    bool shouldVisitTemplateInstantiations() const { return false; }
+
     bool VisitNamedDecl(NamedDecl *ND) {
+        // Skip implicit nodes (compiler-generated ctors, dtors, etc.).
+        if (ND->isImplicit()) return true;
+        // Skip system headers.
+        if (SM.isInSystemHeader(ND->getLocation())) return true;
+        StringRef name = safeDeclName(ND);
+        if (name.empty()) return true;
         auto ploc = SM.getPresumedLoc(ND->getLocation());
         if (!ploc.isValid()) return true;
+        uint32_t startCol = (uint32_t)ploc.getColumn();
+        // Cursor must be within the token's character span (same as RefLocator).
         if ((uint32_t)ploc.getLine() == target_line &&
-            (uint32_t)ploc.getColumn() <= target_col)
+            target_col >= startCol &&
+            target_col < startCol + (uint32_t)name.size())
             found = ND;
         return true;
     }
@@ -1016,6 +1032,24 @@ public:
 static const NamedDecl *locate_symbol_at(ASTUnit *ast, uint32_t line, uint32_t col) {
     ASTContext &Ctx = ast->getASTContext();
     const SourceManager &SM = Ctx.getSourceManager();
+
+    // Clangd pattern: only proceed when the cursor is on an identifier token.
+    // Hovering on punctuation (::, (, *, etc.) should return nothing rather
+    // than a garbage result from the DeclLocator fallback.
+    {
+        SourceLocation loc = SM.translateLineCol(SM.getMainFileID(), line, col);
+        if (loc.isValid()) {
+            Token tok;
+            if (!Lexer::getRawToken(loc, tok, SM, Ctx.getLangOpts(),
+                                    /*IgnoreWhiteSpace=*/true)) {
+                if (tok.getKind() != tok::identifier &&
+                    tok.getKind() != tok::raw_identifier &&
+                    tok.getKind() != tok::kw_auto &&
+                    tok.getKind() != tok::kw_operator)
+                    return nullptr;
+            }
+        }
+    }
 
     RefLocator refV(SM, line, col);
     refV.TraverseDecl(Ctx.getTranslationUnitDecl());
