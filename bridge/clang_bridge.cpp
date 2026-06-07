@@ -23,6 +23,7 @@
 #include <clang/Index/IndexingAction.h>
 #include <clang/Index/USRGeneration.h>
 #include <clang/Lex/PPCallbacks.h>
+#include <clang/Tooling/ArgumentsAdjusters.h>
 #include <clang/Tooling/CompilationDatabase.h>
 #include <clang/Tooling/Core/Replacement.h>
 #include <clang/Tooling/Tooling.h>
@@ -54,6 +55,23 @@ const char *cb_index_last_error(const CB_Index *idx) {
 
 // ── TransUnit ─────────────────────────────────────────────────────────────────
 
+// Probe the installed clang resource directory once at startup.  Used to
+// override ClangTool's auto-computed resource dir (which is relative to the
+// freight binary and therefore wrong when freight is not co-located with clang).
+static std::string find_clang_resource_dir() {
+    FILE *f = popen("clang -print-resource-dir 2>/dev/null", "r");
+    if (!f) return {};
+    char buf[512];
+    bool ok = fgets(buf, sizeof(buf), f) != nullptr;
+    pclose(f);
+    if (!ok) return {};
+    std::string result(buf);
+    while (!result.empty() &&
+           (result.back() == '\n' || result.back() == '\r' || result.back() == ' '))
+        result.pop_back();
+    return result;
+}
+
 struct CB_TransUnit {
     std::unique_ptr<ASTUnit> ast;
 };
@@ -75,6 +93,17 @@ CB_TransUnit *cb_parse(
     std::vector<std::string> sources{source_file};
     ClangTool tool(db, sources);
     tool.setPrintErrorMessage(false);
+
+    // Force the correct installed resource dir to the END of the argument list
+    // so it overrides whatever resource dir ClangTool auto-computes from the
+    // freight binary location (which is wrong when freight != clang).
+    static const std::string s_resource_dir = find_clang_resource_dir();
+    if (!s_resource_dir.empty()) {
+        tool.appendArgumentsAdjuster(getInsertArgumentAdjuster(
+            CommandLineArguments{"-resource-dir", s_resource_dir},
+            ArgumentInsertPosition::END
+        ));
+    }
 
     std::vector<std::unique_ptr<ASTUnit>> asts;
     tool.buildASTs(asts);
@@ -134,6 +163,14 @@ CB_TransUnit *cb_parse_unsaved(
     std::vector<std::string> sources{tmp_path};
     ClangTool tool(db, sources);
     tool.setPrintErrorMessage(false);
+
+    static const std::string s_resource_dir_unsaved = find_clang_resource_dir();
+    if (!s_resource_dir_unsaved.empty()) {
+        tool.appendArgumentsAdjuster(getInsertArgumentAdjuster(
+            CommandLineArguments{"-resource-dir", s_resource_dir_unsaved},
+            ArgumentInsertPosition::END
+        ));
+    }
 
     std::vector<std::unique_ptr<ASTUnit>> asts;
     tool.buildASTs(asts);
