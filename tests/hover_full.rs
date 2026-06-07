@@ -15,7 +15,7 @@ fn hover_full_includes_signature() {
     let src = "/// Add two integers.\nint add(int a, int b);";
     let path = write_temp("cb_hf_sig.hpp", src);
     let idx = Index::new();
-    let tu = idx.parse(path.to_str().unwrap(), &["-std=c++17"]).unwrap();
+    let tu = idx.parse(path.to_str().unwrap(), "", &["-std=c++17"]).unwrap();
 
     let md = hover::hover_full(&tu, 2, 5).expect("expected full hover");
     assert!(md.contains("add"), "signature missing: {md}");
@@ -28,7 +28,7 @@ fn hover_full_includes_full_comment() {
     let src = "/// Brief line.\n/// Second line.\nint value;";
     let path = write_temp("cb_hf_full.hpp", src);
     let idx = Index::new();
-    let tu = idx.parse(path.to_str().unwrap(), &["-std=c++17"]).unwrap();
+    let tu = idx.parse(path.to_str().unwrap(), "", &["-std=c++17"]).unwrap();
 
     let md = hover::hover_full(&tu, 3, 5).expect("expected full hover");
     // The full text should include the second line
@@ -43,7 +43,7 @@ fn hover_full_includes_definition_location() {
     let src = "int square(int x) { return x*x; }";
     let path = write_temp("cb_hf_loc.cpp", src);
     let idx = Index::new();
-    let tu = idx.parse(path.to_str().unwrap(), &["-std=c++17"]).unwrap();
+    let tu = idx.parse(path.to_str().unwrap(), "", &["-std=c++17"]).unwrap();
 
     let md = hover::hover_full(&tu, 1, 5).expect("expected full hover");
     // Should include "Defined in ..." footer

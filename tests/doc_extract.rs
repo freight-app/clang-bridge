@@ -31,7 +31,7 @@ struct Point {{
 
     let idx = Index::new();
     let tu = idx
-        .parse(path.to_str().unwrap(), &["-std=c++17"])
+        .parse(path.to_str().unwrap(), "", &["-std=c++17"])
         .expect("parse failed");
 
     let items: Vec<_> = tu.doc_items().collect();

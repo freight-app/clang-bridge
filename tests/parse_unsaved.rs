@@ -6,7 +6,7 @@ use clang_bridge::Index;
 fn parse_unsaved_produces_valid_tu() {
     let src = "int square(int x) { return x * x; }";
     let idx = Index::new();
-    let tu = idx.parse_unsaved("/tmp/cb_pu_test.cpp", src, &["-std=c++17"]);
+    let tu = idx.parse_unsaved("/tmp/cb_pu_test.cpp", "", src, &["-std=c++17"]);
     if tu.is_none() {
         panic!("parse_unsaved failed: {:?}", idx.last_error());
     }
@@ -25,7 +25,7 @@ fn parse_unsaved_hover_works() {
     let src = "/// Compute the cube.\nint cube(int x) { return x * x * x; }";
     let idx = Index::new();
     let tu = idx
-        .parse_unsaved("/tmp/cb_pu_hover.cpp", src, &["-std=c++17"])
+        .parse_unsaved("/tmp/cb_pu_hover.cpp", "", src, &["-std=c++17"])
         .expect("parse_unsaved should succeed");
 
     let md = clang_bridge::hover::hover_full(&tu, 2, 5).expect("hover");
@@ -36,7 +36,7 @@ fn parse_unsaved_hover_works() {
 #[test]
 fn index_last_error_on_nonexistent_file() {
     let idx = Index::new();
-    let result = idx.parse("/tmp/this_file_definitely_does_not_exist_abc123.cpp", &[]);
+    let result = idx.parse("/tmp/this_file_definitely_does_not_exist_abc123.cpp", "", &[]);
     // Parse should fail.
     assert!(result.is_none());
     // last_error should be set.

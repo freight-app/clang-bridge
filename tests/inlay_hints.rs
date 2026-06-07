@@ -15,7 +15,7 @@ fn param_hint_at_call_site() {
     let src = "void f(int x, int y) {}\nvoid use() { f(1, 2); }";
     let path = write_temp("cb_inlay_param.cpp", src);
     let idx = Index::new();
-    let tu = idx.parse(path.to_str().unwrap(), &["-std=c++17"]).unwrap();
+    let tu = idx.parse(path.to_str().unwrap(), "", &["-std=c++17"]).unwrap();
 
     let hints = inlay::inlay_hints(&tu, 1, 2);
     // There should be two parameter hints: "x:" at col of arg 1, "y:" at col of arg 2.
@@ -35,7 +35,7 @@ fn type_hint_for_auto_variable() {
     let src = "void f() { auto x = 42; }";
     let path = write_temp("cb_inlay_auto.cpp", src);
     let idx = Index::new();
-    let tu = idx.parse(path.to_str().unwrap(), &["-std=c++17"]).unwrap();
+    let tu = idx.parse(path.to_str().unwrap(), "", &["-std=c++17"]).unwrap();
 
     let hints = inlay::inlay_hints(&tu, 1, 1);
     // There should be one deduced-type hint for `x` with kind=1.
@@ -57,7 +57,7 @@ fn no_hint_when_arg_matches_param_name() {
     let src = "void f(int x) {}\nvoid use(int x) { f(x); }";
     let path = write_temp("cb_inlay_suppress.cpp", src);
     let idx = Index::new();
-    let tu = idx.parse(path.to_str().unwrap(), &["-std=c++17"]).unwrap();
+    let tu = idx.parse(path.to_str().unwrap(), "", &["-std=c++17"]).unwrap();
 
     let hints = inlay::inlay_hints(&tu, 1, 2);
     let param_hints: Vec<_> = hints.iter().filter(|h| h.kind == 0).collect();

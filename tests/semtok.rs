@@ -15,7 +15,7 @@ fn semantic_tokens_classify_function() {
     let src = "int add(int a, int b) { return a + b; }";
     let path = write_temp("cb_semtok_fn.cpp", src);
     let idx = Index::new();
-    let tu = idx.parse(path.to_str().unwrap(), &["-std=c++17"]).unwrap();
+    let tu = idx.parse(path.to_str().unwrap(), "", &["-std=c++17"]).unwrap();
 
     let toks = semtok::semantic_tokens(&tu);
     assert!(!toks.is_empty(), "expected tokens");
@@ -30,7 +30,7 @@ fn semantic_tokens_sorted_by_position() {
     let src = "int x; int y; int z;";
     let path = write_temp("cb_semtok_sort.cpp", src);
     let idx = Index::new();
-    let tu = idx.parse(path.to_str().unwrap(), &["-std=c++17"]).unwrap();
+    let tu = idx.parse(path.to_str().unwrap(), "", &["-std=c++17"]).unwrap();
 
     let toks = semtok::semantic_tokens(&tu);
     let positions: Vec<_> = toks.iter().map(|t| (t.line, t.col)).collect();
@@ -44,7 +44,7 @@ fn semantic_tokens_classify_type() {
     let src = "struct Point { int x; int y; };";
     let path = write_temp("cb_semtok_type.cpp", src);
     let idx = Index::new();
-    let tu = idx.parse(path.to_str().unwrap(), &["-std=c++17"]).unwrap();
+    let tu = idx.parse(path.to_str().unwrap(), "", &["-std=c++17"]).unwrap();
 
     let toks = semtok::semantic_tokens(&tu);
     let type_toks: Vec<_> = toks.iter().filter(|t| t.token_type == tok_type::TYPE).collect();

@@ -15,7 +15,7 @@ fn write_temp(name: &str, content: &str) -> std::path::PathBuf {
 fn collect(tag: &str, src: &str) -> Vec<(String, String, i32)> {
     let path = write_temp(&format!("cb_docsym_{tag}.cpp"), src);
     let idx = Index::new();
-    let tu = idx.parse(path.to_str().unwrap(), &["-std=c++17"]).unwrap();
+    let tu = idx.parse(path.to_str().unwrap(), "", &["-std=c++17"]).unwrap();
     let list = tu.document_symbols().expect("expected symbol list");
     (0..list.len())
         .map(|i| {

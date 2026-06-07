@@ -12,7 +12,7 @@ fn write_temp(name: &str, content: &str) -> std::path::PathBuf {
 
 fn get_usr(path: &str, line: u32, col: u32) -> Option<String> {
     let idx = Index::new();
-    let tu = idx.parse(path, &["-std=c++17"])?;
+    let tu = idx.parse(path, "", &["-std=c++17"])?;
     tu.symbol_at(line, col).map(|s| s.usr().to_string())
 }
 
@@ -23,7 +23,7 @@ fn references_finds_all_call_sites() {
     let src = "int add(int a, int b) { return a + b; }\nint main() { return add(1, 2) + add(3, 4); }";
     let path = write_temp("cb_refs_add.cpp", src);
     let idx = Index::new();
-    let tu = idx.parse(path.to_str().unwrap(), &["-std=c++17"]).unwrap();
+    let tu = idx.parse(path.to_str().unwrap(), "", &["-std=c++17"]).unwrap();
 
     // Get USR for 'add'.
     let sym = tu.symbol_at(1, 5).expect("symbol at add declaration");
@@ -44,7 +44,7 @@ fn references_marks_definition_site() {
     let src = "int value = 42;\nint use_it() { return value; }";
     let path = write_temp("cb_refs_def.cpp", src);
     let idx = Index::new();
-    let tu = idx.parse(path.to_str().unwrap(), &["-std=c++17"]).unwrap();
+    let tu = idx.parse(path.to_str().unwrap(), "", &["-std=c++17"]).unwrap();
 
     let sym = tu.symbol_at(1, 5).expect("symbol at 'value'");
     let usr = sym.usr().to_string();
@@ -62,7 +62,7 @@ fn rename_collects_edits_for_all_sites() {
     let src = "int counter = 0;\nvoid inc() { counter++; }\nvoid dec() { counter--; }";
     let path = write_temp("cb_rename_counter.cpp", src);
     let idx = Index::new();
-    let tu = idx.parse(path.to_str().unwrap(), &["-std=c++17"]).unwrap();
+    let tu = idx.parse(path.to_str().unwrap(), "", &["-std=c++17"]).unwrap();
 
     let sym = tu.symbol_at(1, 5).expect("symbol at 'counter'");
     let usr = sym.usr().to_string();
@@ -87,7 +87,7 @@ fn rename_detects_conflict() {
     let src = "int count = 0;\nint counter = 1;";
     let path = write_temp("cb_rename_conflict.cpp", src);
     let idx = Index::new();
-    let tu = idx.parse(path.to_str().unwrap(), &["-std=c++17"]).unwrap();
+    let tu = idx.parse(path.to_str().unwrap(), "", &["-std=c++17"]).unwrap();
 
     let sym = tu.symbol_at(2, 5).expect("symbol at 'counter'");
     let usr = sym.usr().to_string();
@@ -103,7 +103,7 @@ fn rename_no_conflict_for_fresh_name() {
     let src = "int old_value = 42;\nvoid use() { old_value++; }";
     let path = write_temp("cb_rename_fresh.cpp", src);
     let idx = Index::new();
-    let tu = idx.parse(path.to_str().unwrap(), &["-std=c++17"]).unwrap();
+    let tu = idx.parse(path.to_str().unwrap(), "", &["-std=c++17"]).unwrap();
 
     let sym = tu.symbol_at(1, 5).expect("symbol at 'old_value'");
     let usr = sym.usr().to_string();

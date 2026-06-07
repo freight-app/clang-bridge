@@ -18,7 +18,7 @@ fn signature_help_returns_overload_at_call_site() {
     // col 21 is at the '2' (second argument, 0-based index 1).
     let path = write_temp("cb_sighelp_basic.cpp", src);
     let idx = Index::new();
-    let tu = idx.parse(path.to_str().unwrap(), &["-std=c++17"]).unwrap();
+    let tu = idx.parse(path.to_str().unwrap(), "", &["-std=c++17"]).unwrap();
 
     let sh = sighelp::signature_help(&tu, 2, 21)
         .expect("expected signature help at call site");
@@ -41,7 +41,7 @@ fn signature_help_tracks_active_param() {
     let src = "void f(int x, int y, int z) {}\nvoid use() { f(1, 2, 3); }";
     let path = write_temp("cb_sighelp_active.cpp", src);
     let idx = Index::new();
-    let tu = idx.parse(path.to_str().unwrap(), &["-std=c++17"]).unwrap();
+    let tu = idx.parse(path.to_str().unwrap(), "", &["-std=c++17"]).unwrap();
 
     // col 22 = on '3' (third argument, 0-based index 2)
     let sh = sighelp::signature_help(&tu, 2, 22)

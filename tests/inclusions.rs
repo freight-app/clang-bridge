@@ -20,7 +20,7 @@ fn inclusions_finds_local_header() {
     let cpp = write_temp("cb_incl_local.cpp", &src);
 
     let idx = Index::new();
-    let tu = idx.parse(cpp.to_str().unwrap(), &["-std=c++17"]).unwrap();
+    let tu = idx.parse(cpp.to_str().unwrap(), "", &["-std=c++17"]).unwrap();
 
     let incls = inclusion::inclusions(&tu);
     let found = incls.iter().any(|i| i.included_file.contains("cb_incl_math"));
@@ -41,7 +41,7 @@ fn inclusions_records_directive_line() {
     let cpp = write_temp("cb_incl_lineno.cpp", &src);
 
     let idx = Index::new();
-    let tu = idx.parse(cpp.to_str().unwrap(), &["-std=c++17"]).unwrap();
+    let tu = idx.parse(cpp.to_str().unwrap(), "", &["-std=c++17"]).unwrap();
 
     let incls = inclusion::inclusions(&tu);
     let found = incls.iter().find(|i| i.included_file.contains("cb_incl_line.h"));

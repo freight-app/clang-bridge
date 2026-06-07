@@ -18,7 +18,7 @@ fn symbol_at_resolves_function_declaration() {
     }
 
     let idx = Index::new();
-    let tu = idx.parse(path.to_str().unwrap(), &["-std=c++17"]).unwrap();
+    let tu = idx.parse(path.to_str().unwrap(), "", &["-std=c++17"]).unwrap();
 
     // Line 2, column 5 should hit `multiply`.
     let sym = tu.symbol_at(2, 5).expect("expected symbol at (2,5)");
@@ -35,7 +35,7 @@ fn symbol_at_resolves_variable_reference() {
     // x use:         col 25 ("return x")
     let path = write_temp("cb_sym_varref.cpp", src);
     let idx = Index::new();
-    let tu = idx.parse(path.to_str().unwrap(), &["-std=c++17"]).unwrap();
+    let tu = idx.parse(path.to_str().unwrap(), "", &["-std=c++17"]).unwrap();
 
     let sym = tu.symbol_at(1, 25).expect("expected symbol at use site");
     assert_eq!(sym.name(), "x", "expected param 'x', got '{}'", sym.name());
@@ -49,7 +49,7 @@ fn symbol_at_resolves_member_access() {
     //                                           ^ col 31 = 'y'
     let path = write_temp("cb_sym_member.cpp", src);
     let idx = Index::new();
-    let tu = idx.parse(path.to_str().unwrap(), &["-std=c++17"]).unwrap();
+    let tu = idx.parse(path.to_str().unwrap(), "", &["-std=c++17"]).unwrap();
 
     let sym = tu.symbol_at(2, 31).expect("expected symbol at member access");
     assert_eq!(sym.name(), "Point::y", "expected 'Point::y', got '{}'", sym.name());
@@ -63,7 +63,7 @@ fn symbol_at_resolves_type_reference() {
     //          ^ col 1 = 'P' of 'Point'
     let path = write_temp("cb_sym_typeref.cpp", src);
     let idx = Index::new();
-    let tu = idx.parse(path.to_str().unwrap(), &["-std=c++17"]).unwrap();
+    let tu = idx.parse(path.to_str().unwrap(), "", &["-std=c++17"]).unwrap();
 
     let sym = tu.symbol_at(2, 1).expect("expected symbol at type reference");
     assert_eq!(sym.name(), "Point", "expected 'Point', got '{}'", sym.name());
@@ -78,7 +78,7 @@ fn goto_resolves_to_definition_from_call_site() {
     //                              ^ col 21 = 's' of 'square'
     let path = write_temp("cb_goto_callsite.cpp", src);
     let idx = Index::new();
-    let tu = idx.parse(path.to_str().unwrap(), &["-std=c++17"]).unwrap();
+    let tu = idx.parse(path.to_str().unwrap(), "", &["-std=c++17"]).unwrap();
 
     let loc = clang_bridge::goto::goto_definition(&tu, 3, 21)
         .expect("expected definition from call site");
