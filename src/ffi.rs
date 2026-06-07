@@ -158,6 +158,7 @@ extern "C" {
     pub fn cb_parse(
         idx: *mut CB_Index,
         source_file: *const c_char,
+        working_dir: *const c_char,
         args: *const *const c_char,
         nargs: usize,
     ) -> *mut CB_TransUnit;
@@ -256,6 +257,7 @@ extern "C" {
     pub fn cb_parse_unsaved(
         idx: *mut CB_Index,
         virtual_path: *const c_char,
+        working_dir: *const c_char,
         contents: *const c_char,
         len: usize,
         args: *const *const c_char,

@@ -17,9 +17,12 @@ CB_Index *cb_index_create(void);
 void      cb_index_destroy(CB_Index *idx);
 
 /// Parse a translation unit from `source_file` using compile flags `args[0..nargs]`.
+/// `working_dir` is used as the compilation directory (the project root from which
+/// relative include paths such as `-Iinc` are resolved).  Pass NULL to use ".".
 CB_TransUnit *cb_parse(
     CB_Index   *idx,
     const char *source_file,
+    const char *working_dir,
     const char * const *args,
     size_t      nargs
 );
@@ -192,6 +195,7 @@ const char *cb_index_last_error(const CB_Index *idx);
 CB_TransUnit *cb_parse_unsaved(
     CB_Index   *idx,
     const char *virtual_path,
+    const char *working_dir,
     const char *contents,
     size_t      len,
     const char * const *args,

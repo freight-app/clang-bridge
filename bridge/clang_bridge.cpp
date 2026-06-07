@@ -61,13 +61,16 @@ struct CB_TransUnit {
 CB_TransUnit *cb_parse(
     CB_Index   *idx,
     const char *source_file,
+    const char *working_dir,
     const char * const *args,
     size_t nargs
 ) {
     std::vector<std::string> compile_args(args, args + nargs);
+    const std::string dir = (working_dir && *working_dir) ? working_dir : ".";
 
-    // FixedCompilationDatabase wraps a single file with given compile flags.
-    FixedCompilationDatabase db(".", compile_args);
+    // FixedCompilationDatabase uses `dir` as the compilation working directory
+    // so relative include paths like `-Iinc` resolve against the project root.
+    FixedCompilationDatabase db(dir, compile_args);
 
     std::vector<std::string> sources{source_file};
     ClangTool tool(db, sources);
@@ -100,6 +103,7 @@ CB_TransUnit *cb_parse(
 CB_TransUnit *cb_parse_unsaved(
     CB_Index   *idx,
     const char *virtual_path,
+    const char *working_dir,
     const char *contents,
     size_t      len,
     const char * const *args,
@@ -125,7 +129,8 @@ CB_TransUnit *cb_parse_unsaved(
     }
 
     std::vector<std::string> compile_args(args, args + nargs);
-    FixedCompilationDatabase db(".", compile_args);
+    const std::string dir = (working_dir && *working_dir) ? working_dir : ".";
+    FixedCompilationDatabase db(dir, compile_args);
     std::vector<std::string> sources{tmp_path};
     ClangTool tool(db, sources);
     tool.setPrintErrorMessage(false);

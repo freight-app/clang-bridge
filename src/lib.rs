@@ -27,31 +27,41 @@ impl Index {
     }
 
     /// Parse `source_file` with the given compile `args`.
-    pub fn parse(&self, source_file: &str, args: &[&str]) -> Option<TranslationUnit> {
+    ///
+    /// `working_dir` is the project root from which relative include paths in
+    /// `args` (e.g. `-Iinc`) are resolved.  Pass `""` to use the process cwd.
+    pub fn parse(&self, source_file: &str, working_dir: &str, args: &[&str]) -> Option<TranslationUnit> {
         let src = CString::new(source_file).ok()?;
+        let wd  = CString::new(working_dir).ok()?;
         let cargs: Vec<CString> = args.iter().filter_map(|a| CString::new(*a).ok()).collect();
         let ptrs: Vec<*const std::ffi::c_char> = cargs.iter().map(|s| s.as_ptr()).collect();
-        let tu = unsafe { ffi::cb_parse(self.0, src.as_ptr(), ptrs.as_ptr(), ptrs.len()) };
+        let tu = unsafe { ffi::cb_parse(self.0, src.as_ptr(), wd.as_ptr(), ptrs.as_ptr(), ptrs.len()) };
         if tu.is_null() { None } else { Some(TranslationUnit(tu)) }
     }
 
     /// Parse `contents` as if they were the file at `virtual_path`.
+    ///
+    /// `working_dir` sets the compilation directory for resolving relative
+    /// include paths.  Pass `""` to fall back to the process cwd.
     ///
     /// Useful for LSP servers where the editor holds unsaved edits. On failure
     /// returns `None`; call [`Index::last_error`] for a description.
     pub fn parse_unsaved(
         &self,
         virtual_path: &str,
+        working_dir: &str,
         contents: &str,
         args: &[&str],
     ) -> Option<TranslationUnit> {
         let vp = CString::new(virtual_path).ok()?;
+        let wd = CString::new(working_dir).ok()?;
         let cargs: Vec<CString> = args.iter().filter_map(|a| CString::new(*a).ok()).collect();
         let ptrs: Vec<*const std::ffi::c_char> = cargs.iter().map(|s| s.as_ptr()).collect();
         let tu = unsafe {
             ffi::cb_parse_unsaved(
                 self.0,
                 vp.as_ptr(),
+                wd.as_ptr(),
                 contents.as_ptr() as *const _,
                 contents.len(),
                 ptrs.as_ptr(),
