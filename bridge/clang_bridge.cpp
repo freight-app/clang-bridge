@@ -40,6 +40,14 @@
 using namespace clang;
 using namespace clang::tooling;
 
+// getName() asserts when the DeclarationName is not a plain identifier
+// (constructors, destructors, operators, conversion functions).  Use this
+// helper everywhere a NamedDecl's name is not known to be an identifier.
+static StringRef safeDeclName(const NamedDecl *D) {
+    if (!D || !D->getDeclName().isIdentifier()) return {};
+    return D->getName();
+}
+
 // ── Index ─────────────────────────────────────────────────────────────────────
 
 struct CB_Index {
@@ -469,6 +477,9 @@ public:
     bool shouldVisitTemplateInstantiations() const { return false; }
 
     bool skip(const NamedDecl *ND) const {
+        // Non-identifier names (constructors, operators, etc.) are not useful
+        // in the document symbol outline and getName() asserts on them.
+        if (!ND->getDeclName().isIdentifier()) return true;
         return SM.isInSystemHeader(ND->getLocation()) || ND->getName().empty();
     }
 
@@ -671,7 +682,7 @@ public:
             // Suppress the hint when the argument is already the same name
             // (e.g. `f(x)` where param is also named x).
             if (auto *DRE = dyn_cast<DeclRefExpr>(arg->IgnoreParenImpCasts()))
-                if (DRE->getDecl()->getName() == PD->getName()) continue;
+                if (safeDeclName(DRE->getDecl()) == PD->getName()) continue;
 
             auto p = SM.getPresumedLoc(SM.getSpellingLoc(arg->getBeginLoc()));
             if (!p.isValid()) continue;
@@ -878,7 +889,7 @@ public:
     bool VisitDeclRefExpr(DeclRefExpr *E) {
         if (!found) {
             const NamedDecl *D = E->getFoundDecl();
-            if (inToken(E->getLocation(), D->getName().size()))
+            if (inToken(E->getLocation(), safeDeclName(D).size()))
                 found = D;
         }
         return true;
@@ -887,7 +898,7 @@ public:
     bool VisitMemberExpr(MemberExpr *E) {
         if (!found) {
             const NamedDecl *D = E->getMemberDecl();
-            if (inToken(E->getMemberLoc(), D->getName().size()))
+            if (inToken(E->getMemberLoc(), safeDeclName(D).size()))
                 found = D;
         }
         return true;
@@ -1601,7 +1612,7 @@ public:
         if (!p.isValid()) return;
 
         // Length = number of characters in the name.
-        StringRef name = D->getName();
+        StringRef name = safeDeclName(D);
         if (name.empty()) return;
 
         SemanticTokenEntry t;
