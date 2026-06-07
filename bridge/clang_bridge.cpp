@@ -655,7 +655,12 @@ public:
     bool shouldVisitTemplateInstantiations() const { return false; }
 
     bool inViewport(SourceLocation loc) const {
-        auto p = SM.getPresumedLoc(SM.getSpellingLoc(loc));
+        loc = SM.getSpellingLoc(loc);
+        // Only emit hints for tokens that live in the main translation unit file.
+        // Without this guard, hints from included headers (e.g. vec2.h) whose
+        // line numbers happen to fall within [start_line, end_line] leak through.
+        if (SM.getFileID(loc) != SM.getMainFileID()) return false;
+        auto p = SM.getPresumedLoc(loc);
         if (!p.isValid()) return false;
         return p.getLine() >= start_line && p.getLine() <= end_line;
     }
@@ -689,6 +694,49 @@ public:
 
             // Suppress the hint when the argument is already the same name
             // (e.g. `f(x)` where param is also named x).
+            if (auto *DRE = dyn_cast<DeclRefExpr>(arg->IgnoreParenImpCasts()))
+                if (safeDeclName(DRE->getDecl()) == PD->getName()) continue;
+
+            auto p = SM.getPresumedLoc(SM.getSpellingLoc(arg->getBeginLoc()));
+            if (!p.isValid()) continue;
+            InlayHintEntry h;
+            h.line  = p.getLine();
+            h.col   = p.getColumn();
+            h.label = PD->getNameAsString() + ":";
+            h.kind  = 0;
+            hints.push_back(std::move(h));
+        }
+        return true;
+    }
+
+    // ── Parameter name hints at constructor call sites ────────────────────────
+    // VisitCallExpr only covers CallExpr nodes; CXXConstructExpr is a separate
+    // AST node type and must be handled here.  Pattern follows clangd's
+    // VisitCXXConstructExpr / processCall in InlayHints.cpp.
+
+    bool VisitCXXConstructExpr(CXXConstructExpr *E) {
+        // Only hint explicit paren/brace calls — skip aggregate or implicit init.
+        if (!E->getParenOrBraceRange().isValid()) return true;
+        if (E->isStdInitListInitialization()) return true;
+
+        const CXXConstructorDecl *CD = E->getConstructor();
+        if (!CD) return true;
+        if (SM.isInSystemHeader(CD->getLocation())) return true;
+
+        // Copy/move constructors carry no useful parameter name information.
+        if (CD->isCopyConstructor() || CD->isMoveConstructor()) return true;
+
+        auto pbegin = CD->param_begin();
+        auto pend   = CD->param_end();
+        unsigned i = 0;
+        for (auto *arg : E->arguments()) {
+            if (pbegin + i >= pend) break;
+            const ParmVarDecl *PD = *(pbegin + i);
+            ++i;
+            StringRef pname = PD->getName();
+            if (pname.empty() || pname.starts_with("_")) continue;
+            if (!inViewport(arg->getBeginLoc())) continue;
+
             if (auto *DRE = dyn_cast<DeclRefExpr>(arg->IgnoreParenImpCasts()))
                 if (safeDeclName(DRE->getDecl()) == PD->getName()) continue;
 
