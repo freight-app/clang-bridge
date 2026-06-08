@@ -37,8 +37,45 @@ std::string find_clang_resource_dir() {
     return result;
 }
 
-CB_TransUnit *cb_parse(
-    CB_Index   *idx,
+// Custom ToolAction that builds an ASTUnit with CaptureDiagsKind::All so that
+// StoredDiagnostics is populated (ClangTool::buildASTs uses None by default,
+// which means diagnostics are never visible via stored_diag_begin/end and
+// ASTUnit::Reparse with a buffer segfaults).
+struct CapturingASTBuilder : public ToolAction {
+    std::vector<std::unique_ptr<ASTUnit>> &asts;
+    explicit CapturingASTBuilder(std::vector<std::unique_ptr<ASTUnit>> &v) : asts(v) {}
+
+    bool runInvocation(std::shared_ptr<CompilerInvocation> Invocation,
+                       FileManager *Files,
+                       std::shared_ptr<PCHContainerOperations> PCHContainerOps,
+                       DiagnosticConsumer *DiagConsumer) override {
+        IntrusiveRefCntPtr<FileManager> FM(Files);
+        // LoadFromCompilerInvocation needs shared_ptr<DiagnosticOptions>; copy
+        // the options out of the invocation so we can own them separately.
+        auto DiagOpts = std::make_shared<DiagnosticOptions>(
+            Invocation->getDiagnosticOpts());
+        IntrusiveRefCntPtr<DiagnosticsEngine> Diags =
+            CompilerInstance::createDiagnostics(
+                Files->getVirtualFileSystem(),
+                *DiagOpts,
+                DiagConsumer, /*ShouldOwnClient=*/false);
+        std::unique_ptr<ASTUnit> AST = ASTUnit::LoadFromCompilerInvocation(
+            Invocation, std::move(PCHContainerOps),
+            DiagOpts, Diags, FM,
+            /*OnlyLocalDecls=*/false,
+            CaptureDiagsKind::All,
+            /*PrecompilePreambleAfterNParses=*/0,
+            TU_Complete,
+            /*CacheCodeCompletionResults=*/true,
+            /*IncludeBriefCommentsInCodeCompletion=*/true,
+            /*UserFilesAreVolatile=*/false);
+        if (!AST) return false;
+        asts.push_back(std::move(AST));
+        return true;
+    }
+};
+
+static std::unique_ptr<ASTUnit> build_ast_with_diagnostics(
     const char *source_file,
     const char *working_dir,
     const char * const *args,
@@ -46,41 +83,39 @@ CB_TransUnit *cb_parse(
 ) {
     std::vector<std::string> compile_args(args, args + nargs);
     const std::string dir = (working_dir && *working_dir) ? working_dir : ".";
-
-    // FixedCompilationDatabase uses `dir` as the compilation working directory
-    // so relative include paths like `-Iinc` resolve against the project root.
     FixedCompilationDatabase db(dir, compile_args);
-
     std::vector<std::string> sources{source_file};
     ClangTool tool(db, sources);
     tool.setPrintErrorMessage(false);
 
-    // Force the correct installed resource dir to the END of the argument list
-    // so it overrides whatever resource dir ClangTool auto-computes from the
-    // freight binary location (which is wrong when freight != clang).
     static const std::string s_resource_dir = find_clang_resource_dir();
     if (!s_resource_dir.empty()) {
         tool.appendArgumentsAdjuster(getInsertArgumentAdjuster(
             CommandLineArguments{"-resource-dir", s_resource_dir},
-            ArgumentInsertPosition::END
-        ));
+            ArgumentInsertPosition::END));
     }
 
     std::vector<std::unique_ptr<ASTUnit>> asts;
-    tool.buildASTs(asts);
-    if (asts.empty()) {
+    CapturingASTBuilder builder(asts);
+    tool.run(&builder);
+    if (asts.empty()) return nullptr;
+    return std::move(asts[0]);
+}
+
+CB_TransUnit *cb_parse(
+    CB_Index   *idx,
+    const char *source_file,
+    const char *working_dir,
+    const char * const *args,
+    size_t nargs
+) {
+    auto ast = build_ast_with_diagnostics(source_file, working_dir, args, nargs);
+    if (!ast) {
         if (idx) idx->last_error = "failed to build AST for: " + std::string(source_file);
         return nullptr;
     }
-
-    if (asts[0] && asts[0]->getDiagnostics().hasFatalErrorOccurred()) {
-        if (idx) idx->last_error =
-            "fatal error building AST for: " + std::string(source_file);
-        return nullptr;
-    }
-
     auto *tu = new CB_TransUnit{};
-    tu->ast = std::move(asts[0]);
+    tu->ast = std::move(ast);
     return tu;
 }
 
@@ -118,39 +153,17 @@ CB_TransUnit *cb_parse_unsaved(
         std::fclose(f);
     }
 
-    std::vector<std::string> compile_args(args, args + nargs);
     const std::string dir = (working_dir && *working_dir) ? working_dir : ".";
-    FixedCompilationDatabase db(dir, compile_args);
-    std::vector<std::string> sources{tmp_path};
-    ClangTool tool(db, sources);
-    tool.setPrintErrorMessage(false);
-
-    static const std::string s_resource_dir_unsaved = find_clang_resource_dir();
-    if (!s_resource_dir_unsaved.empty()) {
-        tool.appendArgumentsAdjuster(getInsertArgumentAdjuster(
-            CommandLineArguments{"-resource-dir", s_resource_dir_unsaved},
-            ArgumentInsertPosition::END
-        ));
-    }
-
-    std::vector<std::unique_ptr<ASTUnit>> asts;
-    tool.buildASTs(asts);
+    auto ast = build_ast_with_diagnostics(tmp_path.c_str(), dir.c_str(), args, nargs);
     std::remove(tmp_path.c_str());
 
-    if (asts.empty()) {
+    if (!ast) {
         if (idx) idx->last_error =
             "failed to build AST for: " + std::string(virtual_path);
         return nullptr;
     }
-
-    if (asts[0] && asts[0]->getDiagnostics().hasFatalErrorOccurred()) {
-        if (idx) idx->last_error =
-            "fatal error building AST for: " + std::string(virtual_path);
-        return nullptr;
-    }
-
     auto *tu = new CB_TransUnit{};
-    tu->ast = std::move(asts[0]);
+    tu->ast = std::move(ast);
     return tu;
 }
 
@@ -230,11 +243,14 @@ void cb_free_string(char *s) { free(s); }
 
 int cb_transunit_reparse(CB_TransUnit *tu, const char *buf, size_t len) {
     std::vector<ASTUnit::RemappedFile> remapped;
-    std::unique_ptr<llvm::MemoryBuffer> owned_buf;
     if (buf && len > 0) {
         StringRef main = tu->ast->getMainFileName();
-        owned_buf = llvm::MemoryBuffer::getMemBufferCopy(StringRef(buf, len), main);
-        remapped.emplace_back(main.str(), owned_buf.get());
+        // ASTUnit::OwnsRemappedFileBuffers = true by default: Reparse takes
+        // ownership of the MemoryBuffer* and will delete it.  Release from
+        // the unique_ptr to transfer ownership and avoid a double-free.
+        auto *mb = llvm::MemoryBuffer::getMemBufferCopy(
+            StringRef(buf, len), main).release();
+        remapped.emplace_back(main.str(), mb);
     }
     return tu->ast->Reparse(std::make_shared<PCHContainerOperations>(),
                             remapped) ? 0 : 1;

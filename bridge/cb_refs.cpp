@@ -235,9 +235,10 @@ public:
         if (!p.isValid()) return true;
         unsigned tok_len = Lexer::MeasureTokenLength(Loc, *SM, LO);
         using SR = index::SymbolRole;
-        bool is_def = (Roles & (index::SymbolRoleSet)SR::Definition) != 0;
+        bool is_write = (Roles & ((index::SymbolRoleSet)SR::Definition |
+                                   (index::SymbolRoleSet)SR::Write)) != 0;
         out.push_back({p.getLine(), p.getColumn(),
-                       p.getColumn() + tok_len, is_def ? (uint8_t)3 : (uint8_t)2});
+                       p.getColumn() + tok_len, is_write ? (uint8_t)3 : (uint8_t)2});
         return true;
     }
 };

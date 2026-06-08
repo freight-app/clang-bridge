@@ -295,5 +295,3 @@ void cb_type_hier_get(const CB_TypeHierList *list, size_t i, CB_TypeHierEntry *o
     out->usr    = ml->current.usr.c_str();
 }
 void cb_type_hier_list_destroy(CB_TypeHierList *list) { delete list; }
-
-// ── Macro expansion ───────────────────────────────────────────────────────────

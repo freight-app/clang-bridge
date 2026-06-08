@@ -41,13 +41,37 @@ static void collect_inclusions(ASTUnit *ast,
         std::string included = CC->OrigEntry->getName().str();
         if (included.empty()) continue;
 
-        // Compute column range of the path literal (heuristic: scan the line).
+        // Find the column range of the path literal ("foo.h" or <foo.h>).
+        // Scan the raw source line for the opening delimiter after #include.
         InclusionEntry e;
         e.including_file = presumed.getFilename() ? presumed.getFilename() : "";
         e.included_file  = included;
         e.line      = presumed.getLine();
         e.start_col = presumed.getColumn();
-        e.end_col   = presumed.getColumn(); // refined below if possible
+        e.end_col   = presumed.getColumn();
+        {
+            bool invalid = false;
+            const char *buf = SM.getCharacterData(incLoc, &invalid);
+            if (!invalid && buf) {
+                // Find opening " or < on this line (within 32 chars of '#')
+                for (int off = 0; off < 32; ++off) {
+                    if (buf[off] == '\n' || buf[off] == '\0') break;
+                    if (buf[off] == '"' || buf[off] == '<') {
+                        char close = (buf[off] == '"') ? '"' : '>';
+                        uint32_t start = (uint32_t)presumed.getColumn() + (uint32_t)off;
+                        // Find the closing delimiter.
+                        uint32_t end = start + 1;
+                        for (int k = off + 1; k < 256; ++k) {
+                            if (buf[k] == '\n' || buf[k] == '\0') break;
+                            if (buf[k] == close) { end = (uint32_t)presumed.getColumn() + (uint32_t)k + 1; break; }
+                        }
+                        e.start_col = start;
+                        e.end_col   = end;
+                        break;
+                    }
+                }
+            }
+        }
         out.push_back(std::move(e));
     }
 }

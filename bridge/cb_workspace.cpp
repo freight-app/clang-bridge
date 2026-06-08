@@ -43,6 +43,18 @@ public:
 
 void cb_workspace_index_add(CB_Index *idx, CB_TransUnit *tu) {
     if (!idx || !tu) return;
+    // Remove stale entries for this file so reparse doesn't create duplicates.
+    {
+        std::string main_path = tu->ast->getMainFileName().str();
+        if (!main_path.empty()) {
+            for (auto it = idx->sym_index.begin(); it != idx->sym_index.end(); ) {
+                if (it->second.file == main_path)
+                    it = idx->sym_index.erase(it);
+                else
+                    ++it;
+            }
+        }
+    }
     WorkspaceIndexer wi(idx, tu->ast->getASTContext());
     wi.TraverseDecl(tu->ast->getASTContext().getTranslationUnitDecl());
 }
@@ -54,25 +66,28 @@ struct CB_WorkspaceSymList {
 
 CB_WorkspaceSymList *cb_workspace_symbols(CB_Index *idx, const char *query) {
     auto *list = new CB_WorkspaceSymList{};
-    if (!idx || !query || !*query) return list;
-    std::string q(query);
+    if (!idx) return list;
+    const bool empty_query = (!query || !*query);
+    std::string q(query ? query : "");
     std::transform(q.begin(), q.end(), q.begin(), ::tolower);
     std::unordered_set<std::string> seen;
     for (const auto &[key, entry] : idx->sym_index) {
-        if (key.find(q) == std::string::npos) continue;
+        if (!empty_query && key.find(q) == std::string::npos) continue;
         if (!seen.insert(entry.usr).second) continue;
         list->results.push_back(entry);
-        if (list->results.size() >= 200) break;
+        if (list->results.size() >= 500) break;
     }
-    std::sort(list->results.begin(), list->results.end(),
-              [&q](const WorkspaceSymEntry &a, const WorkspaceSymEntry &b) {
-                  std::string la = a.name, lb = b.name;
-                  std::transform(la.begin(), la.end(), la.begin(), ::tolower);
-                  std::transform(lb.begin(), lb.end(), lb.begin(), ::tolower);
-                  bool pa = la.find(q) == 0, pb = lb.find(q) == 0;
-                  if (pa != pb) return pa > pb;
-                  return la < lb;
-              });
+    if (!empty_query) {
+        std::sort(list->results.begin(), list->results.end(),
+                  [&q](const WorkspaceSymEntry &a, const WorkspaceSymEntry &b) {
+                      std::string la = a.name, lb = b.name;
+                      std::transform(la.begin(), la.end(), la.begin(), ::tolower);
+                      std::transform(lb.begin(), lb.end(), lb.begin(), ::tolower);
+                      bool pa = la.find(q) == 0, pb = lb.find(q) == 0;
+                      if (pa != pb) return pa > pb;
+                      return la < lb;
+                  });
+    }
     return list;
 }
 size_t cb_workspace_sym_count(const CB_WorkspaceSymList *list) {
