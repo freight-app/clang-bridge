@@ -9,6 +9,9 @@ extern "C" {
 // ── Opaque handles ────────────────────────────────────────────────────────────
 
 typedef struct CB_Index      CB_Index;
+/// A parsed translation unit.  Not thread-safe: a single TU must not be
+/// accessed concurrently from multiple threads.  The Rust wrapper enforces
+/// this via `&mut self` on all mutating operations; the C API does not.
 typedef struct CB_TransUnit  CB_TransUnit;
 
 // ── Lifecycle ─────────────────────────────────────────────────────────────────
@@ -375,12 +378,193 @@ typedef struct CB_CompletionIter CB_CompletionIter;
 
 /// Run code-complete at (line, col) with an optional in-memory replacement for
 /// the main file (unsaved_buf/unsaved_len; pass NULL/0 to use on-disk content).
+/// NOTE: For accurate results the TU should already be reparsed with the latest
+/// buffer via cb_transunit_reparse before calling cb_complete.
 CB_CompletionIter *cb_complete(CB_TransUnit *tu,
                                uint32_t line, uint32_t col,
                                const char *unsaved_buf, size_t unsaved_len);
 /// Returns 1 and fills *out (pointers valid until next call or destroy).
 int  cb_completion_next(CB_CompletionIter *it, CB_CompletionItem *out);
 void cb_completion_iter_destroy(CB_CompletionIter *it);
+
+// ── Document highlight ────────────────────────────────────────────────────────
+
+typedef struct {
+    uint32_t line;      // 1-based start
+    uint32_t col;       // 1-based start
+    uint32_t end_line;  // always == line (tokens don't span lines)
+    uint32_t end_col;   // 1-based exclusive end
+    uint8_t  kind;      // 1=text, 2=read, 3=write(definition)
+} CB_HighlightEntry;
+
+typedef struct CB_HighlightList CB_HighlightList;
+
+/// Find all occurrences of the symbol at (line, col) within the main file.
+/// Maps to LSP textDocument/documentHighlight.
+CB_HighlightList *cb_highlight(CB_TransUnit *tu, uint32_t line, uint32_t col);
+size_t            cb_highlight_count(const CB_HighlightList *list);
+void              cb_highlight_get(const CB_HighlightList *list, size_t i,
+                                   CB_HighlightEntry *out);
+void              cb_highlight_list_destroy(CB_HighlightList *list);
+
+// ── Folding ranges ────────────────────────────────────────────────────────────
+
+typedef struct {
+    uint32_t    start_line; // 1-based
+    uint32_t    end_line;   // 1-based inclusive
+    const char *kind;       // "region" | "comment"
+} CB_FoldingRange;
+
+typedef struct CB_FoldingRangeList CB_FoldingRangeList;
+
+/// Emit folding ranges for functions, classes, enums, namespaces, and comment
+/// blocks. Maps to LSP textDocument/foldingRange.
+CB_FoldingRangeList *cb_folding_ranges(CB_TransUnit *tu);
+size_t               cb_folding_range_count(const CB_FoldingRangeList *list);
+/// kind pointer valid until next call or destroy.
+void                 cb_folding_range_get(const CB_FoldingRangeList *list,
+                                          size_t i, CB_FoldingRange *out);
+void                 cb_folding_range_list_destroy(CB_FoldingRangeList *list);
+
+// ── Code actions ──────────────────────────────────────────────────────────────
+
+typedef struct {
+    const char *title;       // diagnostic message (used as action title)
+    const char *file;        // file path of the edit
+    uint32_t    line;        // 1-based
+    uint32_t    col;         // 1-based
+    uint32_t    end_line;    // 1-based (exclusive)
+    uint32_t    end_col;     // 1-based (exclusive)
+    const char *replacement; // text to insert (empty = pure deletion)
+} CB_CodeAction;
+
+typedef struct CB_CodeActionList CB_CodeActionList;
+
+/// Return fix-it code actions applicable near (line, col) (±3 lines).
+/// Maps to LSP textDocument/codeAction.
+CB_CodeActionList *cb_code_actions(CB_TransUnit *tu,
+                                   uint32_t line, uint32_t col);
+size_t             cb_code_action_count(const CB_CodeActionList *list);
+/// Pointer fields valid until next call or destroy.
+void               cb_code_action_get(const CB_CodeActionList *list,
+                                      size_t i, CB_CodeAction *out);
+void               cb_code_action_list_destroy(CB_CodeActionList *list);
+
+// ── Workspace symbol search ───────────────────────────────────────────────────
+
+typedef struct {
+    const char *name;   // unqualified name
+    const char *detail; // fully-qualified name
+    const char *kind;   // "function" | "method" | "class" | …
+    const char *file;   // source file
+    uint32_t    line;   // 1-based
+    uint32_t    col;    // 1-based
+    const char *usr;    // clang USR
+} CB_WorkspaceSym;
+
+typedef struct CB_WorkspaceSymList CB_WorkspaceSymList;
+
+/// Index all named declarations from `tu` into `idx`'s workspace symbol table.
+/// Call after each successful parse/reparse to keep the index current.
+void                 cb_workspace_index_add(CB_Index *idx, CB_TransUnit *tu);
+/// Return symbols whose lowercase name contains `query` (case-insensitive).
+/// Maps to LSP workspace/symbol.
+CB_WorkspaceSymList *cb_workspace_symbols(CB_Index *idx, const char *query);
+size_t               cb_workspace_sym_count(const CB_WorkspaceSymList *list);
+/// Pointer fields valid until next call or destroy.
+void                 cb_workspace_sym_get(const CB_WorkspaceSymList *list,
+                                          size_t i, CB_WorkspaceSym *out);
+void                 cb_workspace_sym_list_destroy(CB_WorkspaceSymList *list);
+
+// ── Call hierarchy ────────────────────────────────────────────────────────────
+
+typedef struct CB_CallHierItem CB_CallHierItem; // opaque; use getter functions
+
+/// Prepare call-hierarchy item for the function/method at (line, col).
+/// Returns NULL when the cursor is not on a callable.
+CB_CallHierItem *cb_call_hierarchy_prepare(CB_TransUnit *tu,
+                                           uint32_t line, uint32_t col);
+void             cb_call_hier_item_destroy(CB_CallHierItem *item);
+const char      *cb_call_hier_name  (const CB_CallHierItem *item);
+const char      *cb_call_hier_detail(const CB_CallHierItem *item);
+const char      *cb_call_hier_file  (const CB_CallHierItem *item);
+uint32_t         cb_call_hier_line  (const CB_CallHierItem *item);
+uint32_t         cb_call_hier_col   (const CB_CallHierItem *item);
+const char      *cb_call_hier_usr   (const CB_CallHierItem *item);
+
+typedef struct {
+    const char *name;      // caller (incoming) or callee (outgoing) name
+    const char *detail;    // qualified name
+    const char *file;      // definition file
+    uint32_t    line;      // 1-based definition line
+    uint32_t    col;       // 1-based definition col
+    const char *usr;       // clang USR
+    uint32_t    call_line; // 1-based line of the call expression
+    uint32_t    call_col;  // 1-based col of the call expression
+} CB_CallEdge;
+
+typedef struct CB_CallEdgeList CB_CallEdgeList;
+
+/// Collect all functions within `tu` that call the function with `usr`.
+CB_CallEdgeList *cb_incoming_calls(CB_TransUnit *tu, const char *usr);
+/// Collect all functions that the function with `usr` calls within `tu`.
+CB_CallEdgeList *cb_outgoing_calls(CB_TransUnit *tu, const char *usr);
+size_t           cb_call_edge_count(const CB_CallEdgeList *list);
+/// Pointer fields valid until next call or destroy.
+void             cb_call_edge_get(const CB_CallEdgeList *list,
+                                  size_t i, CB_CallEdge *out);
+void             cb_call_edge_list_destroy(CB_CallEdgeList *list);
+
+// ── Type hierarchy ────────────────────────────────────────────────────────────
+
+typedef struct CB_TypeHierItem CB_TypeHierItem; // opaque; use getter functions
+
+/// Prepare type-hierarchy item for the class/struct at (line, col).
+/// Returns NULL when the cursor is not on a type.
+CB_TypeHierItem *cb_type_hierarchy_prepare(CB_TransUnit *tu,
+                                           uint32_t line, uint32_t col);
+void             cb_type_hier_item_destroy(CB_TypeHierItem *item);
+const char      *cb_type_hier_name  (const CB_TypeHierItem *item);
+const char      *cb_type_hier_detail(const CB_TypeHierItem *item);
+const char      *cb_type_hier_file  (const CB_TypeHierItem *item);
+uint32_t         cb_type_hier_line  (const CB_TypeHierItem *item);
+uint32_t         cb_type_hier_col   (const CB_TypeHierItem *item);
+const char      *cb_type_hier_usr   (const CB_TypeHierItem *item);
+
+typedef struct {
+    const char *name;
+    const char *detail;
+    const char *file;
+    uint32_t    line;
+    uint32_t    col;
+    const char *usr;
+} CB_TypeHierEntry;
+
+typedef struct CB_TypeHierList CB_TypeHierList;
+
+/// Return the direct base classes of the type with `usr`.
+CB_TypeHierList *cb_supertypes(CB_TransUnit *tu, const char *usr);
+/// Return all types in `tu` that directly derive from the type with `usr`.
+CB_TypeHierList *cb_subtypes(CB_TransUnit *tu, const char *usr);
+size_t           cb_type_hier_count(const CB_TypeHierList *list);
+/// Pointer fields valid until next call or destroy.
+void             cb_type_hier_get(const CB_TypeHierList *list,
+                                  size_t i, CB_TypeHierEntry *out);
+void             cb_type_hier_list_destroy(CB_TypeHierList *list);
+
+// ── Macro expansion ───────────────────────────────────────────────────────────
+
+/// Return a string showing the macro definition and its fully-expanded form at
+/// (line, col), or NULL when the cursor is not on a macro.
+/// Caller must free with cb_free_string().
+char *cb_expand_macro(CB_TransUnit *tu, uint32_t line, uint32_t col);
+
+// ── AST dump ──────────────────────────────────────────────────────────────────
+
+/// Return a JSON array of named declarations whose source location intersects
+/// [start_line, end_line] (1-based inclusive).
+/// Caller must free with cb_free_string().
+char *cb_ast_dump(CB_TransUnit *tu, uint32_t start_line, uint32_t end_line);
 
 #ifdef __cplusplus
 }

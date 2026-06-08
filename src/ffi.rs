@@ -135,6 +135,82 @@ pub struct CB_InlayHint {
 pub struct CB_InlayHintList(());
 
 #[repr(C)]
+pub struct CB_HighlightEntry {
+    pub line:     u32,
+    pub col:      u32,
+    pub end_line: u32,
+    pub end_col:  u32,
+    pub kind:     u8,
+}
+#[repr(C)]
+pub struct CB_HighlightList(());
+
+#[repr(C)]
+pub struct CB_FoldingRange {
+    pub start_line: u32,
+    pub end_line:   u32,
+    pub kind:       *const c_char,
+}
+#[repr(C)]
+pub struct CB_FoldingRangeList(());
+
+#[repr(C)]
+pub struct CB_CodeAction {
+    pub title:       *const c_char,
+    pub file:        *const c_char,
+    pub line:        u32,
+    pub col:         u32,
+    pub end_line:    u32,
+    pub end_col:     u32,
+    pub replacement: *const c_char,
+}
+#[repr(C)]
+pub struct CB_CodeActionList(());
+
+#[repr(C)]
+pub struct CB_WorkspaceSym {
+    pub name:   *const c_char,
+    pub detail: *const c_char,
+    pub kind:   *const c_char,
+    pub file:   *const c_char,
+    pub line:   u32,
+    pub col:    u32,
+    pub usr:    *const c_char,
+}
+#[repr(C)]
+pub struct CB_WorkspaceSymList(());
+
+#[repr(C)]
+pub struct CB_CallHierItem(());
+#[repr(C)]
+pub struct CB_CallEdge {
+    pub name:      *const c_char,
+    pub detail:    *const c_char,
+    pub file:      *const c_char,
+    pub line:      u32,
+    pub col:       u32,
+    pub usr:       *const c_char,
+    pub call_line: u32,
+    pub call_col:  u32,
+}
+#[repr(C)]
+pub struct CB_CallEdgeList(());
+
+#[repr(C)]
+pub struct CB_TypeHierItem(());
+#[repr(C)]
+pub struct CB_TypeHierEntry {
+    pub name:   *const c_char,
+    pub detail: *const c_char,
+    pub file:   *const c_char,
+    pub line:   u32,
+    pub col:    u32,
+    pub usr:    *const c_char,
+}
+#[repr(C)]
+pub struct CB_TypeHierList(());
+
+#[repr(C)]
 pub struct CB_DocSym {
     pub name: *const c_char,
     pub kind: *const c_char,
@@ -307,4 +383,65 @@ extern "C" {
     pub fn cb_rename_has_conflict(list: *const CB_RenameList) -> i32;
     pub fn cb_rename_conflict_message(list: *const CB_RenameList) -> *const c_char;
     pub fn cb_rename_list_destroy(list: *mut CB_RenameList);
+
+    // Document highlight
+    pub fn cb_highlight(tu: *mut CB_TransUnit, line: u32, col: u32) -> *mut CB_HighlightList;
+    pub fn cb_highlight_count(list: *const CB_HighlightList) -> usize;
+    pub fn cb_highlight_get(list: *const CB_HighlightList, i: usize, out: *mut CB_HighlightEntry);
+    pub fn cb_highlight_list_destroy(list: *mut CB_HighlightList);
+
+    // Folding ranges
+    pub fn cb_folding_ranges(tu: *mut CB_TransUnit) -> *mut CB_FoldingRangeList;
+    pub fn cb_folding_range_count(list: *const CB_FoldingRangeList) -> usize;
+    pub fn cb_folding_range_get(list: *const CB_FoldingRangeList, i: usize, out: *mut CB_FoldingRange);
+    pub fn cb_folding_range_list_destroy(list: *mut CB_FoldingRangeList);
+
+    // Code actions
+    pub fn cb_code_actions(tu: *mut CB_TransUnit, line: u32, col: u32) -> *mut CB_CodeActionList;
+    pub fn cb_code_action_count(list: *const CB_CodeActionList) -> usize;
+    pub fn cb_code_action_get(list: *const CB_CodeActionList, i: usize, out: *mut CB_CodeAction);
+    pub fn cb_code_action_list_destroy(list: *mut CB_CodeActionList);
+
+    // Workspace symbols
+    pub fn cb_workspace_index_add(idx: *mut CB_Index, tu: *mut CB_TransUnit);
+    pub fn cb_workspace_symbols(idx: *mut CB_Index, query: *const c_char) -> *mut CB_WorkspaceSymList;
+    pub fn cb_workspace_sym_count(list: *const CB_WorkspaceSymList) -> usize;
+    pub fn cb_workspace_sym_get(list: *const CB_WorkspaceSymList, i: usize, out: *mut CB_WorkspaceSym);
+    pub fn cb_workspace_sym_list_destroy(list: *mut CB_WorkspaceSymList);
+
+    // Call hierarchy
+    pub fn cb_call_hierarchy_prepare(tu: *mut CB_TransUnit, line: u32, col: u32) -> *mut CB_CallHierItem;
+    pub fn cb_call_hier_item_destroy(item: *mut CB_CallHierItem);
+    pub fn cb_call_hier_name(item: *const CB_CallHierItem) -> *const c_char;
+    pub fn cb_call_hier_detail(item: *const CB_CallHierItem) -> *const c_char;
+    pub fn cb_call_hier_file(item: *const CB_CallHierItem) -> *const c_char;
+    pub fn cb_call_hier_line(item: *const CB_CallHierItem) -> u32;
+    pub fn cb_call_hier_col(item: *const CB_CallHierItem) -> u32;
+    pub fn cb_call_hier_usr(item: *const CB_CallHierItem) -> *const c_char;
+    pub fn cb_incoming_calls(tu: *mut CB_TransUnit, usr: *const c_char) -> *mut CB_CallEdgeList;
+    pub fn cb_outgoing_calls(tu: *mut CB_TransUnit, usr: *const c_char) -> *mut CB_CallEdgeList;
+    pub fn cb_call_edge_count(list: *const CB_CallEdgeList) -> usize;
+    pub fn cb_call_edge_get(list: *const CB_CallEdgeList, i: usize, out: *mut CB_CallEdge);
+    pub fn cb_call_edge_list_destroy(list: *mut CB_CallEdgeList);
+
+    // Type hierarchy
+    pub fn cb_type_hierarchy_prepare(tu: *mut CB_TransUnit, line: u32, col: u32) -> *mut CB_TypeHierItem;
+    pub fn cb_type_hier_item_destroy(item: *mut CB_TypeHierItem);
+    pub fn cb_type_hier_name(item: *const CB_TypeHierItem) -> *const c_char;
+    pub fn cb_type_hier_detail(item: *const CB_TypeHierItem) -> *const c_char;
+    pub fn cb_type_hier_file(item: *const CB_TypeHierItem) -> *const c_char;
+    pub fn cb_type_hier_line(item: *const CB_TypeHierItem) -> u32;
+    pub fn cb_type_hier_col(item: *const CB_TypeHierItem) -> u32;
+    pub fn cb_type_hier_usr(item: *const CB_TypeHierItem) -> *const c_char;
+    pub fn cb_supertypes(tu: *mut CB_TransUnit, usr: *const c_char) -> *mut CB_TypeHierList;
+    pub fn cb_subtypes(tu: *mut CB_TransUnit, usr: *const c_char) -> *mut CB_TypeHierList;
+    pub fn cb_type_hier_count(list: *const CB_TypeHierList) -> usize;
+    pub fn cb_type_hier_get(list: *const CB_TypeHierList, i: usize, out: *mut CB_TypeHierEntry);
+    pub fn cb_type_hier_list_destroy(list: *mut CB_TypeHierList);
+
+    // Macro expansion
+    pub fn cb_expand_macro(tu: *mut CB_TransUnit, line: u32, col: u32) -> *mut c_char;
+
+    // AST dump
+    pub fn cb_ast_dump(tu: *mut CB_TransUnit, start_line: u32, end_line: u32) -> *mut c_char;
 }

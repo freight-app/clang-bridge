@@ -1,12 +1,15 @@
 mod ffi;
 
+pub mod callhier;
+pub mod codeaction;
 pub mod completion;
 pub mod diag;
-pub mod tidy;
 pub mod doc;
 pub mod docsym;
+pub mod folding;
 pub mod format;
 pub mod goto;
+pub mod highlight;
 pub mod hover;
 pub mod inclusion;
 pub mod inlay;
@@ -15,6 +18,9 @@ pub mod rename;
 pub mod semtok;
 pub mod sighelp;
 pub mod symbol;
+pub mod tidy;
+pub mod typehier;
+pub mod workspace;
 
 use std::ffi::CString;
 
@@ -69,6 +75,12 @@ impl Index {
             )
         };
         if tu.is_null() { None } else { Some(TranslationUnit(tu)) }
+    }
+
+    /// Add all named declarations from `tu` into this index's workspace symbol
+    /// table. Call after each successful parse/reparse.
+    pub fn workspace_index_add(&self, tu: &TranslationUnit) {
+        workspace::workspace_index_add(self, tu);
     }
 
     /// Return the error message from the most recent failed [`parse`] or
@@ -150,6 +162,69 @@ impl TranslationUnit {
     /// Collect all edits to rename the symbol with `usr` to `new_name`.
     pub fn rename(&self, usr: &str, new_name: &str) -> rename::RenameResult {
         rename::rename(self, usr, new_name)
+    }
+
+    /// Find all occurrences of the symbol at `(line, col)` in the main file.
+    pub fn highlight(&self, line: u32, col: u32) -> highlight::HighlightList {
+        highlight::highlight(self, line, col)
+    }
+
+    /// Folding regions (functions, classes, enums, namespaces).
+    pub fn folding_ranges(&self) -> folding::FoldingRangeList {
+        folding::folding_ranges(self)
+    }
+
+    /// Fix-it code actions applicable near `(line, col)`.
+    pub fn code_actions(&self, line: u32, col: u32) -> codeaction::CodeActionList {
+        codeaction::code_actions(self, line, col)
+    }
+
+    /// Prepare a call-hierarchy item for the callable at `(line, col)`.
+    pub fn call_hierarchy_prepare(&self, line: u32, col: u32) -> Option<callhier::CallHierItem> {
+        callhier::call_hierarchy_prepare(self, line, col)
+    }
+
+    /// All functions in this TU that call the function with `usr`.
+    pub fn incoming_calls(&self, usr: &str) -> callhier::CallEdgeList {
+        callhier::incoming_calls(self, usr)
+    }
+
+    /// All functions that the function with `usr` calls within this TU.
+    pub fn outgoing_calls(&self, usr: &str) -> callhier::CallEdgeList {
+        callhier::outgoing_calls(self, usr)
+    }
+
+    /// Prepare a type-hierarchy item for the class/struct at `(line, col)`.
+    pub fn type_hierarchy_prepare(&self, line: u32, col: u32) -> Option<typehier::TypeHierItem> {
+        typehier::type_hierarchy_prepare(self, line, col)
+    }
+
+    /// Direct base classes of the type with `usr`.
+    pub fn supertypes(&self, usr: &str) -> typehier::TypeHierList {
+        typehier::supertypes(self, usr)
+    }
+
+    /// All types in this TU that directly derive from the type with `usr`.
+    pub fn subtypes(&self, usr: &str) -> typehier::TypeHierList {
+        typehier::subtypes(self, usr)
+    }
+
+    /// Show the macro definition and full expansion at `(line, col)`.
+    pub fn expand_macro(&self, line: u32, col: u32) -> Option<String> {
+        let p = unsafe { ffi::cb_expand_macro(self.0, line, col) };
+        if p.is_null() { return None; }
+        let s = unsafe { std::ffi::CStr::from_ptr(p) }.to_string_lossy().into_owned();
+        unsafe { ffi::cb_free_string(p) };
+        Some(s)
+    }
+
+    /// JSON array of named declarations in `[start_line, end_line]` (1-based).
+    pub fn ast_dump(&self, start_line: u32, end_line: u32) -> String {
+        let p = unsafe { ffi::cb_ast_dump(self.0, start_line, end_line) };
+        if p.is_null() { return "[]".to_owned(); }
+        let s = unsafe { std::ffi::CStr::from_ptr(p) }.to_string_lossy().into_owned();
+        unsafe { ffi::cb_free_string(p) };
+        s
     }
 
     /// Reparse the translation unit with an optional in-memory replacement for

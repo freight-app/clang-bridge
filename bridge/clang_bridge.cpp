@@ -33,10 +33,12 @@
 #include <llvm/Support/VirtualFileSystem.h>
 
 #include <algorithm>
+#include <functional>
 #include <memory>
 #include <sstream>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 using namespace clang;
@@ -52,8 +54,15 @@ static StringRef safeDeclName(const NamedDecl *D) {
 
 // ── Index ─────────────────────────────────────────────────────────────────────
 
+struct WorkspaceSymEntry {
+    std::string name, detail, kind, file, usr;
+    uint32_t    line = 0, col = 0;
+};
+
 struct CB_Index {
     std::string last_error; // set by cb_parse / cb_parse_unsaved on failure
+    // Name→entry table populated by cb_workspace_index_add; key = lowercase name.
+    std::unordered_multimap<std::string, WorkspaceSymEntry> sym_index;
 };
 
 CB_Index *cb_index_create() { return new CB_Index{}; }
@@ -2519,3 +2528,751 @@ const char *cb_rename_conflict_message(const CB_RenameList *list) {
 }
 
 void cb_rename_list_destroy(CB_RenameList *list) { delete list; }
+
+// ── Document highlight ────────────────────────────────────────────────────────
+// Find all occurrences of the symbol at (line,col) within the main file.
+// Maps to LSP textDocument/documentHighlight.
+
+struct HighlightEntry { uint32_t line, col, end_col; uint8_t kind; };
+
+struct CB_HighlightList {
+    std::vector<HighlightEntry> entries;
+};
+
+class HighlightCollector : public index::IndexDataConsumer {
+    const std::string          &target_usr;
+    std::vector<HighlightEntry> &out;
+    const SourceManager        *SM = nullptr;
+    LangOptions                 LO;
+    FileID                      main_fid;
+public:
+    HighlightCollector(const std::string &usr, std::vector<HighlightEntry> &o,
+                       const LangOptions &lo, FileID fid)
+        : target_usr(usr), out(o), LO(lo), main_fid(fid) {}
+
+    void initialize(ASTContext &Ctx) override { SM = &Ctx.getSourceManager(); }
+
+    bool handleDeclOccurrence(const Decl *D, index::SymbolRoleSet Roles,
+                              llvm::ArrayRef<index::SymbolRelation>,
+                              SourceLocation Loc, ASTNodeInfo) override {
+        if (!SM) return true;
+        SmallString<128> buf;
+        if (index::generateUSRForDecl(D, buf)) return true;
+        if (buf.str() != target_usr) return true;
+        Loc = SM->getSpellingLoc(Loc);
+        if (SM->getFileID(Loc) != main_fid) return true;
+        auto p = SM->getPresumedLoc(Loc);
+        if (!p.isValid()) return true;
+        unsigned tok_len = Lexer::MeasureTokenLength(Loc, *SM, LO);
+        using SR = index::SymbolRole;
+        bool is_def = (Roles & (index::SymbolRoleSet)SR::Definition) != 0;
+        out.push_back({p.getLine(), p.getColumn(),
+                       p.getColumn() + tok_len, is_def ? (uint8_t)3 : (uint8_t)2});
+        return true;
+    }
+};
+
+CB_HighlightList *cb_highlight(CB_TransUnit *tu, uint32_t line, uint32_t col) {
+    auto *list = new CB_HighlightList{};
+    CB_Symbol *sym = cb_symbol_at(tu, line, col);
+    if (!sym) return list;
+    std::string usr(cb_symbol_usr(sym));
+    cb_symbol_destroy(sym);
+    if (usr.empty()) return list;
+
+    ASTContext    &Ctx     = tu->ast->getASTContext();
+    SourceManager &SM      = Ctx.getSourceManager();
+    HighlightCollector consumer(usr, list->entries, Ctx.getLangOpts(),
+                                SM.getMainFileID());
+    index::IndexingOptions opts{};
+    opts.SystemSymbolFilter = index::IndexingOptions::SystemSymbolFilterKind::None;
+    opts.IndexFunctionLocals = true;
+    index::indexASTUnit(*tu->ast, consumer, opts);
+    return list;
+}
+
+size_t cb_highlight_count(const CB_HighlightList *list) { return list->entries.size(); }
+
+void cb_highlight_get(const CB_HighlightList *list, size_t i, CB_HighlightEntry *out) {
+    const auto &e = list->entries[i];
+    out->line     = e.line;
+    out->col      = e.col;
+    out->end_line = e.line;
+    out->end_col  = e.end_col;
+    out->kind     = e.kind;
+}
+
+void cb_highlight_list_destroy(CB_HighlightList *list) { delete list; }
+
+// ── Folding ranges ────────────────────────────────────────────────────────────
+
+struct FoldingEntry { uint32_t start_line, end_line; std::string kind; };
+
+struct CB_FoldingRangeList {
+    std::vector<FoldingEntry> entries;
+    FoldingEntry              current;
+};
+
+class FoldingVisitor : public RecursiveASTVisitor<FoldingVisitor> {
+    SourceManager            &SM;
+    FileID                    main_fid;
+    std::vector<FoldingEntry> &out;
+
+    void addRange(SourceRange R, const char *kind) {
+        if (R.isInvalid()) return;
+        SourceLocation b = SM.getSpellingLoc(R.getBegin());
+        SourceLocation e = SM.getSpellingLoc(R.getEnd());
+        if (SM.getFileID(b) != main_fid) return;
+        auto pb = SM.getPresumedLoc(b);
+        auto pe = SM.getPresumedLoc(e);
+        if (!pb.isValid() || !pe.isValid()) return;
+        if (pe.getLine() <= pb.getLine() + 1) return;
+        out.push_back({pb.getLine(), pe.getLine(), kind});
+    }
+public:
+    FoldingVisitor(SourceManager &sm, FileID fid, std::vector<FoldingEntry> &o)
+        : SM(sm), main_fid(fid), out(o) {}
+    bool shouldVisitTemplateInstantiations() const { return false; }
+    bool VisitFunctionDecl(FunctionDecl *D) {
+        if (D->hasBody() && D->getBody())
+            addRange(D->getBody()->getSourceRange(), "region");
+        return true;
+    }
+    bool VisitCXXRecordDecl(CXXRecordDecl *D) {
+        if (D->isCompleteDefinition()) addRange(D->getBraceRange(), "region");
+        return true;
+    }
+    bool VisitEnumDecl(EnumDecl *D) {
+        if (D->isCompleteDefinition()) addRange(D->getBraceRange(), "region");
+        return true;
+    }
+    bool VisitNamespaceDecl(NamespaceDecl *D) {
+        addRange(SourceRange(D->getBeginLoc(), D->getRBraceLoc()), "region");
+        return true;
+    }
+};
+
+CB_FoldingRangeList *cb_folding_ranges(CB_TransUnit *tu) {
+    auto *list = new CB_FoldingRangeList{};
+    ASTContext    &Ctx     = tu->ast->getASTContext();
+    SourceManager &SM      = Ctx.getSourceManager();
+    FileID         main_fid = SM.getMainFileID();
+
+    FoldingVisitor vis(SM, main_fid, list->entries);
+    vis.TraverseDecl(Ctx.getTranslationUnitDecl());
+
+    std::sort(list->entries.begin(), list->entries.end(),
+              [](const FoldingEntry &a, const FoldingEntry &b) {
+                  return a.start_line < b.start_line; });
+    return list;
+}
+
+size_t cb_folding_range_count(const CB_FoldingRangeList *list) {
+    return list->entries.size();
+}
+void cb_folding_range_get(const CB_FoldingRangeList *list, size_t i,
+                          CB_FoldingRange *out) {
+    auto *ml = const_cast<CB_FoldingRangeList *>(list);
+    ml->current = ml->entries[i];
+    out->start_line = ml->current.start_line;
+    out->end_line   = ml->current.end_line;
+    out->kind       = ml->current.kind.c_str();
+}
+void cb_folding_range_list_destroy(CB_FoldingRangeList *list) { delete list; }
+
+// ── Code actions ──────────────────────────────────────────────────────────────
+
+struct CodeActionEntry {
+    std::string title, file, replacement;
+    uint32_t    line = 0, col = 0, end_line = 0, end_col = 0;
+};
+struct CB_CodeActionList {
+    std::vector<CodeActionEntry> actions;
+    CodeActionEntry              current;
+};
+
+CB_CodeActionList *cb_code_actions(CB_TransUnit *tu, uint32_t line, uint32_t /*col*/) {
+    auto *list = new CB_CodeActionList{};
+    const SourceManager &SM = tu->ast->getSourceManager();
+    for (auto it = tu->ast->stored_diag_begin();
+         it != tu->ast->stored_diag_end(); ++it) {
+        const StoredDiagnostic &sd = *it;
+        auto ploc = SM.getPresumedLoc(sd.getLocation());
+        if (!ploc.isValid()) continue;
+        uint32_t dline = ploc.getLine();
+        if (line > 0 && (dline + 3 < line || dline > line + 3)) continue;
+        for (const auto &fi : sd.getFixIts()) {
+            auto sl = SM.getPresumedLoc(fi.RemoveRange.getBegin());
+            if (!sl.isValid()) continue;
+            auto el = SM.getPresumedLoc(fi.RemoveRange.getEnd());
+            CodeActionEntry e;
+            e.title       = sd.getMessage().str();
+            e.file        = sl.getFilename() ? sl.getFilename() : "";
+            e.line        = sl.getLine();
+            e.col         = sl.getColumn();
+            e.end_line    = el.isValid() ? el.getLine()   : sl.getLine();
+            e.end_col     = el.isValid() ? el.getColumn() : sl.getColumn();
+            e.replacement = fi.CodeToInsert;
+            list->actions.push_back(std::move(e));
+        }
+    }
+    return list;
+}
+size_t cb_code_action_count(const CB_CodeActionList *list) {
+    return list->actions.size();
+}
+void cb_code_action_get(const CB_CodeActionList *list, size_t i,
+                        CB_CodeAction *out) {
+    auto *ml = const_cast<CB_CodeActionList *>(list);
+    ml->current  = ml->actions[i];
+    out->title       = ml->current.title.c_str();
+    out->file        = ml->current.file.c_str();
+    out->line        = ml->current.line;
+    out->col         = ml->current.col;
+    out->end_line    = ml->current.end_line;
+    out->end_col     = ml->current.end_col;
+    out->replacement = ml->current.replacement.c_str();
+}
+void cb_code_action_list_destroy(CB_CodeActionList *list) { delete list; }
+
+// ── Workspace symbol index ────────────────────────────────────────────────────
+
+class WorkspaceIndexer : public RecursiveASTVisitor<WorkspaceIndexer> {
+    CB_Index      *idx;
+    SourceManager &SM;
+
+    void addDecl(const NamedDecl *D) {
+        StringRef name = safeDeclName(D);
+        if (name.empty()) return;
+        if (D->isImplicit()) return;
+        if (SM.isInSystemHeader(D->getLocation())) return;
+        auto ploc = SM.getPresumedLoc(D->getLocation());
+        if (!ploc.isValid()) return;
+        SmallString<128> buf;
+        index::generateUSRForDecl(D, buf);
+        WorkspaceSymEntry e;
+        e.name   = name.str();
+        e.detail = D->getQualifiedNameAsString();
+        e.kind   = declKind(D);
+        e.file   = ploc.getFilename() ? ploc.getFilename() : "";
+        e.line   = ploc.getLine();
+        e.col    = ploc.getColumn();
+        e.usr    = buf.str().str();
+        std::string lower = name.lower();
+        idx->sym_index.emplace(std::move(lower), std::move(e));
+    }
+public:
+    WorkspaceIndexer(CB_Index *i, ASTContext &C)
+        : idx(i), SM(C.getSourceManager()) {}
+    bool shouldVisitTemplateInstantiations() const { return false; }
+    bool VisitNamedDecl(NamedDecl *D) {
+        if (isa<NamespaceDecl>(D)) return true;
+        if (!isa<FunctionDecl>(D) && !isa<CXXRecordDecl>(D) &&
+            !isa<EnumDecl>(D)     && !isa<VarDecl>(D) &&
+            !isa<TypedefNameDecl>(D) && !isa<EnumConstantDecl>(D))
+            return true;
+        addDecl(D);
+        return true;
+    }
+};
+
+void cb_workspace_index_add(CB_Index *idx, CB_TransUnit *tu) {
+    if (!idx || !tu) return;
+    WorkspaceIndexer wi(idx, tu->ast->getASTContext());
+    wi.TraverseDecl(tu->ast->getASTContext().getTranslationUnitDecl());
+}
+
+struct CB_WorkspaceSymList {
+    std::vector<WorkspaceSymEntry> results;
+    WorkspaceSymEntry              current;
+};
+
+CB_WorkspaceSymList *cb_workspace_symbols(CB_Index *idx, const char *query) {
+    auto *list = new CB_WorkspaceSymList{};
+    if (!idx || !query || !*query) return list;
+    std::string q(query);
+    std::transform(q.begin(), q.end(), q.begin(), ::tolower);
+    std::unordered_set<std::string> seen;
+    for (const auto &[key, entry] : idx->sym_index) {
+        if (key.find(q) == std::string::npos) continue;
+        if (!seen.insert(entry.usr).second) continue;
+        list->results.push_back(entry);
+        if (list->results.size() >= 200) break;
+    }
+    std::sort(list->results.begin(), list->results.end(),
+              [&q](const WorkspaceSymEntry &a, const WorkspaceSymEntry &b) {
+                  std::string la = a.name, lb = b.name;
+                  std::transform(la.begin(), la.end(), la.begin(), ::tolower);
+                  std::transform(lb.begin(), lb.end(), lb.begin(), ::tolower);
+                  bool pa = la.find(q) == 0, pb = lb.find(q) == 0;
+                  if (pa != pb) return pa > pb;
+                  return la < lb;
+              });
+    return list;
+}
+size_t cb_workspace_sym_count(const CB_WorkspaceSymList *list) {
+    return list->results.size();
+}
+void cb_workspace_sym_get(const CB_WorkspaceSymList *list, size_t i,
+                          CB_WorkspaceSym *out) {
+    auto *ml = const_cast<CB_WorkspaceSymList *>(list);
+    ml->current = ml->results[i];
+    out->name   = ml->current.name.c_str();
+    out->detail = ml->current.detail.c_str();
+    out->kind   = ml->current.kind.c_str();
+    out->file   = ml->current.file.c_str();
+    out->line   = ml->current.line;
+    out->col    = ml->current.col;
+    out->usr    = ml->current.usr.c_str();
+}
+void cb_workspace_sym_list_destroy(CB_WorkspaceSymList *list) { delete list; }
+
+// ── Call hierarchy ────────────────────────────────────────────────────────────
+
+struct CB_CallHierItem {
+    std::string name, detail, file, usr;
+    uint32_t    line = 0, col = 0;
+};
+
+struct CallEdgeEntry {
+    std::string name, detail, file, usr;
+    uint32_t    line = 0, col = 0;
+    uint32_t    call_line = 0, call_col = 0;
+};
+
+struct CB_CallEdgeList {
+    std::vector<CallEdgeEntry> edges;
+    CallEdgeEntry              current;
+};
+
+CB_CallHierItem *cb_call_hierarchy_prepare(CB_TransUnit *tu,
+                                           uint32_t line, uint32_t col) {
+    const NamedDecl *ND = locate_symbol_at(tu->ast.get(), line, col);
+    if (!ND) return nullptr;
+    if (!isa<FunctionDecl>(ND)) return nullptr;
+    ASTContext    &Ctx = tu->ast->getASTContext();
+    SourceManager &SM  = Ctx.getSourceManager();
+    auto *item = new CB_CallHierItem{};
+    item->name   = ND->getNameAsString();
+    item->detail = ND->getQualifiedNameAsString();
+    SmallString<128> buf;
+    index::generateUSRForDecl(ND, buf);
+    item->usr  = buf.str().str();
+    auto ploc  = SM.getPresumedLoc(ND->getLocation());
+    if (ploc.isValid()) {
+        item->file = ploc.getFilename() ? ploc.getFilename() : "";
+        item->line = ploc.getLine();
+        item->col  = ploc.getColumn();
+    }
+    return item;
+}
+void             cb_call_hier_item_destroy(CB_CallHierItem *item) { delete item; }
+const char      *cb_call_hier_name  (const CB_CallHierItem *i) { return i->name.c_str(); }
+const char      *cb_call_hier_detail(const CB_CallHierItem *i) { return i->detail.c_str(); }
+const char      *cb_call_hier_file  (const CB_CallHierItem *i) { return i->file.c_str(); }
+uint32_t         cb_call_hier_line  (const CB_CallHierItem *i) { return i->line; }
+uint32_t         cb_call_hier_col   (const CB_CallHierItem *i) { return i->col; }
+const char      *cb_call_hier_usr   (const CB_CallHierItem *i) { return i->usr.c_str(); }
+
+// Visitor that builds call edges. For outgoing=true: collect all calls FROM
+// the function with target_usr. For outgoing=false: collect calls TO it.
+class CallGraphVisitor : public RecursiveASTVisitor<CallGraphVisitor> {
+    SourceManager     &SM;
+    const std::string &target_usr;
+    bool               outgoing;
+    std::vector<CallEdgeEntry> &out;
+    std::vector<const FunctionDecl *> func_stack;
+
+    std::string funcUSR(const FunctionDecl *FD) const {
+        SmallString<128> b; index::generateUSRForDecl(FD, b); return b.str().str();
+    }
+    bool inTarget() const {
+        return !func_stack.empty() && funcUSR(func_stack.back()) == target_usr;
+    }
+public:
+    CallGraphVisitor(ASTContext &C, const std::string &usr, bool out_flag,
+                     std::vector<CallEdgeEntry> &o)
+        : SM(C.getSourceManager()), target_usr(usr), outgoing(out_flag), out(o) {}
+    bool shouldVisitTemplateInstantiations() const { return false; }
+
+    bool TraverseFunctionDecl(FunctionDecl *FD) {
+        func_stack.push_back(FD);
+        RecursiveASTVisitor<CallGraphVisitor>::TraverseFunctionDecl(FD);
+        func_stack.pop_back();
+        return true;
+    }
+    bool TraverseCXXMethodDecl(CXXMethodDecl *MD) {
+        func_stack.push_back(MD);
+        RecursiveASTVisitor<CallGraphVisitor>::TraverseCXXMethodDecl(MD);
+        func_stack.pop_back();
+        return true;
+    }
+
+    bool VisitCallExpr(CallExpr *CE) {
+        const FunctionDecl *callee = CE->getDirectCallee();
+        if (!callee || func_stack.empty()) return true;
+        auto callLoc = SM.getPresumedLoc(SM.getSpellingLoc(CE->getBeginLoc()));
+        if (!callLoc.isValid()) return true;
+
+        if (outgoing) {
+            if (!inTarget()) return true;
+            auto defLoc = SM.getPresumedLoc(callee->getLocation());
+            CallEdgeEntry e;
+            e.name      = callee->getNameAsString();
+            e.detail    = callee->getQualifiedNameAsString();
+            e.file      = defLoc.isValid() && defLoc.getFilename() ? defLoc.getFilename() : "";
+            e.line      = defLoc.isValid() ? defLoc.getLine()   : 0;
+            e.col       = defLoc.isValid() ? defLoc.getColumn() : 0;
+            e.usr       = funcUSR(callee);
+            e.call_line = callLoc.getLine();
+            e.call_col  = callLoc.getColumn();
+            out.push_back(std::move(e));
+        } else {
+            if (funcUSR(callee) != target_usr) return true;
+            const FunctionDecl *caller = func_stack.back();
+            auto callerLoc = SM.getPresumedLoc(caller->getLocation());
+            CallEdgeEntry e;
+            e.name      = caller->getNameAsString();
+            e.detail    = caller->getQualifiedNameAsString();
+            e.file      = callerLoc.isValid() && callerLoc.getFilename() ? callerLoc.getFilename() : "";
+            e.line      = callerLoc.isValid() ? callerLoc.getLine()   : 0;
+            e.col       = callerLoc.isValid() ? callerLoc.getColumn() : 0;
+            e.usr       = funcUSR(caller);
+            e.call_line = callLoc.getLine();
+            e.call_col  = callLoc.getColumn();
+            out.push_back(std::move(e));
+        }
+        return true;
+    }
+};
+
+CB_CallEdgeList *cb_incoming_calls(CB_TransUnit *tu, const char *usr) {
+    auto *list = new CB_CallEdgeList{};
+    if (!usr || !*usr) return list;
+    CallGraphVisitor vis(tu->ast->getASTContext(), usr, false, list->edges);
+    vis.TraverseDecl(tu->ast->getASTContext().getTranslationUnitDecl());
+    return list;
+}
+CB_CallEdgeList *cb_outgoing_calls(CB_TransUnit *tu, const char *usr) {
+    auto *list = new CB_CallEdgeList{};
+    if (!usr || !*usr) return list;
+    CallGraphVisitor vis(tu->ast->getASTContext(), usr, true, list->edges);
+    vis.TraverseDecl(tu->ast->getASTContext().getTranslationUnitDecl());
+    return list;
+}
+size_t cb_call_edge_count(const CB_CallEdgeList *list) { return list->edges.size(); }
+void cb_call_edge_get(const CB_CallEdgeList *list, size_t i, CB_CallEdge *out) {
+    auto *ml = const_cast<CB_CallEdgeList *>(list);
+    ml->current   = ml->edges[i];
+    out->name      = ml->current.name.c_str();
+    out->detail    = ml->current.detail.c_str();
+    out->file      = ml->current.file.c_str();
+    out->line      = ml->current.line;
+    out->col       = ml->current.col;
+    out->usr       = ml->current.usr.c_str();
+    out->call_line = ml->current.call_line;
+    out->call_col  = ml->current.call_col;
+}
+void cb_call_edge_list_destroy(CB_CallEdgeList *list) { delete list; }
+
+// ── Type hierarchy ────────────────────────────────────────────────────────────
+
+struct CB_TypeHierItem {
+    std::string name, detail, file, usr;
+    uint32_t    line = 0, col = 0;
+};
+
+struct TypeHierEntry {
+    std::string name, detail, file, usr;
+    uint32_t    line = 0, col = 0;
+};
+
+struct CB_TypeHierList {
+    std::vector<TypeHierEntry> entries;
+    TypeHierEntry              current;
+};
+
+static const CXXRecordDecl *findRecordByUSR(ASTContext &Ctx, const std::string &usr) {
+    struct Finder : RecursiveASTVisitor<Finder> {
+        const std::string &target;
+        const CXXRecordDecl *found = nullptr;
+        bool shouldVisitTemplateInstantiations() const { return false; }
+        Finder(const std::string &u) : target(u) {}
+        bool VisitCXXRecordDecl(CXXRecordDecl *D) {
+            SmallString<128> b; index::generateUSRForDecl(D, b);
+            if (b.str() == target) { found = D; return false; }
+            return true;
+        }
+    } f(usr);
+    f.TraverseDecl(Ctx.getTranslationUnitDecl());
+    return f.found;
+}
+
+CB_TypeHierItem *cb_type_hierarchy_prepare(CB_TransUnit *tu,
+                                           uint32_t line, uint32_t col) {
+    const NamedDecl *ND = locate_symbol_at(tu->ast.get(), line, col);
+    if (!ND) return nullptr;
+    if (auto *TND = dyn_cast<TypedefNameDecl>(ND)) {
+        QualType qt = TND->getUnderlyingType();
+        if (auto *RT = qt->getAs<RecordType>()) ND = RT->getDecl();
+    }
+    const CXXRecordDecl *RD = dyn_cast<CXXRecordDecl>(ND);
+    if (!RD) return nullptr;
+    if (auto *def = RD->getDefinition()) RD = def;
+
+    ASTContext    &Ctx = tu->ast->getASTContext();
+    SourceManager &SM  = Ctx.getSourceManager();
+    auto *item = new CB_TypeHierItem{};
+    item->name   = RD->getNameAsString();
+    item->detail = RD->getQualifiedNameAsString();
+    SmallString<128> buf; index::generateUSRForDecl(RD, buf);
+    item->usr = buf.str().str();
+    auto ploc = SM.getPresumedLoc(RD->getLocation());
+    if (ploc.isValid()) {
+        item->file = ploc.getFilename() ? ploc.getFilename() : "";
+        item->line = ploc.getLine();
+        item->col  = ploc.getColumn();
+    }
+    return item;
+}
+void        cb_type_hier_item_destroy(CB_TypeHierItem *i) { delete i; }
+const char *cb_type_hier_name  (const CB_TypeHierItem *i) { return i->name.c_str(); }
+const char *cb_type_hier_detail(const CB_TypeHierItem *i) { return i->detail.c_str(); }
+const char *cb_type_hier_file  (const CB_TypeHierItem *i) { return i->file.c_str(); }
+uint32_t    cb_type_hier_line  (const CB_TypeHierItem *i) { return i->line; }
+uint32_t    cb_type_hier_col   (const CB_TypeHierItem *i) { return i->col; }
+const char *cb_type_hier_usr   (const CB_TypeHierItem *i) { return i->usr.c_str(); }
+
+CB_TypeHierList *cb_supertypes(CB_TransUnit *tu, const char *usr) {
+    auto *list = new CB_TypeHierList{};
+    if (!usr || !*usr) return list;
+    ASTContext    &Ctx = tu->ast->getASTContext();
+    SourceManager &SM  = Ctx.getSourceManager();
+    const CXXRecordDecl *RD = findRecordByUSR(Ctx, usr);
+    if (!RD || !RD->isCompleteDefinition()) return list;
+    for (const auto &base : RD->bases()) {
+        const RecordType *RT = base.getType()->getAs<RecordType>();
+        if (!RT) continue;
+        const CXXRecordDecl *B = dyn_cast<CXXRecordDecl>(RT->getDecl());
+        if (!B) continue;
+        TypeHierEntry e;
+        e.name   = B->getNameAsString();
+        e.detail = B->getQualifiedNameAsString();
+        SmallString<128> buf; index::generateUSRForDecl(B, buf);
+        e.usr  = buf.str().str();
+        auto p = SM.getPresumedLoc(B->getLocation());
+        if (p.isValid()) {
+            e.file = p.getFilename() ? p.getFilename() : "";
+            e.line = p.getLine(); e.col = p.getColumn();
+        }
+        list->entries.push_back(std::move(e));
+    }
+    return list;
+}
+
+CB_TypeHierList *cb_subtypes(CB_TransUnit *tu, const char *usr) {
+    auto *list = new CB_TypeHierList{};
+    if (!usr || !*usr) return list;
+    ASTContext    &Ctx = tu->ast->getASTContext();
+    SourceManager &SM  = Ctx.getSourceManager();
+    std::string    target(usr);
+    struct SubFinder : RecursiveASTVisitor<SubFinder> {
+        const std::string        &target;
+        std::vector<TypeHierEntry> &out;
+        SourceManager            &SM;
+        bool shouldVisitTemplateInstantiations() const { return false; }
+        SubFinder(const std::string &t, std::vector<TypeHierEntry> &o, SourceManager &sm)
+            : target(t), out(o), SM(sm) {}
+        bool VisitCXXRecordDecl(CXXRecordDecl *D) {
+            if (!D->isCompleteDefinition()) return true;
+            for (const auto &base : D->bases()) {
+                const RecordType *RT = base.getType()->getAs<RecordType>();
+                if (!RT) continue;
+                SmallString<128> b; index::generateUSRForDecl(RT->getDecl(), b);
+                if (b.str() != target) continue;
+                TypeHierEntry e;
+                e.name   = D->getNameAsString();
+                e.detail = D->getQualifiedNameAsString();
+                SmallString<128> db; index::generateUSRForDecl(D, db);
+                e.usr  = db.str().str();
+                auto p = SM.getPresumedLoc(D->getLocation());
+                if (p.isValid()) {
+                    e.file = p.getFilename() ? p.getFilename() : "";
+                    e.line = p.getLine(); e.col = p.getColumn();
+                }
+                out.push_back(std::move(e));
+                break;
+            }
+            return true;
+        }
+    } sf(target, list->entries, SM);
+    sf.TraverseDecl(Ctx.getTranslationUnitDecl());
+    return list;
+}
+
+size_t cb_type_hier_count(const CB_TypeHierList *list) { return list->entries.size(); }
+void cb_type_hier_get(const CB_TypeHierList *list, size_t i, CB_TypeHierEntry *out) {
+    auto *ml = const_cast<CB_TypeHierList *>(list);
+    ml->current = ml->entries[i];
+    out->name   = ml->current.name.c_str();
+    out->detail = ml->current.detail.c_str();
+    out->file   = ml->current.file.c_str();
+    out->line   = ml->current.line;
+    out->col    = ml->current.col;
+    out->usr    = ml->current.usr.c_str();
+}
+void cb_type_hier_list_destroy(CB_TypeHierList *list) { delete list; }
+
+// ── Macro expansion ───────────────────────────────────────────────────────────
+
+char *cb_expand_macro(CB_TransUnit *tu, uint32_t line, uint32_t col) {
+    ASTContext          &Ctx = tu->ast->getASTContext();
+    const SourceManager &SM  = Ctx.getSourceManager();
+    const LangOptions   &LO  = Ctx.getLangOpts();
+    Preprocessor        &PP  = tu->ast->getPreprocessor();
+
+    SourceLocation target = SM.translateLineCol(SM.getMainFileID(), line, col);
+    if (!target.isValid()) return nullptr;
+
+    Token tok;
+    if (Lexer::getRawToken(target, tok, SM, LO, false)) return nullptr;
+    if (tok.getKind() != tok::identifier && tok.getKind() != tok::raw_identifier)
+        return nullptr;
+
+    const IdentifierInfo *II = tok.getKind() == tok::identifier
+                                ? tok.getIdentifierInfo() : nullptr;
+    if (!II) {
+        std::string sp = Lexer::getSpelling(tok, SM, LO);
+        if (sp.empty()) return nullptr;
+        II = &Ctx.Idents.get(sp);
+    }
+    const MacroInfo *MI = PP.getMacroInfo(II);
+    if (!MI) return nullptr;
+
+    // Recursively expand macro body tokens (up to 5 levels deep).
+    std::function<std::string(const MacroInfo*, const IdentifierInfo*, int)> expand =
+        [&](const MacroInfo *mi, const IdentifierInfo *self, int depth) -> std::string {
+            if (depth > 5) return "...";
+            std::string body;
+            for (const Token &t : mi->tokens()) {
+                std::string sp = Lexer::getSpelling(t, SM, LO);
+                if (!sp.empty() &&
+                    (t.getKind() == tok::identifier ||
+                     t.getKind() == tok::raw_identifier)) {
+                    const IdentifierInfo *inner = &Ctx.Idents.get(sp);
+                    const MacroInfo *innerMI = PP.getMacroInfo(inner);
+                    if (innerMI && inner != self)
+                        body += expand(innerMI, inner, depth + 1);
+                    else
+                        body += sp;
+                } else {
+                    body += sp;
+                }
+                body += " ";
+            }
+            while (!body.empty() && body.back() == ' ') body.pop_back();
+            return body;
+        };
+
+    // Show: definition line  +  fully-expanded form (if different)
+    std::string def_body;
+    for (const Token &t : MI->tokens()) {
+        def_body += Lexer::getSpelling(t, SM, LO);
+        def_body += " ";
+    }
+    while (!def_body.empty() && def_body.back() == ' ') def_body.pop_back();
+
+    std::string out;
+    out += "#define " + II->getName().str();
+    if (!MI->isObjectLike()) {
+        out += "(";
+        bool first = true;
+        for (const IdentifierInfo *p : MI->params()) {
+            if (!first) out += ", ";
+            out += p->getName().str(); first = false;
+        }
+        if (MI->isVariadic()) out += first ? "..." : ", ...";
+        out += ")";
+    }
+    out += " " + def_body;
+
+    std::string expanded = expand(MI, II, 0);
+    if (expanded != def_body && !expanded.empty())
+        out += "\n→ " + expanded;
+
+    return strdup(out.c_str());
+}
+
+// ── AST dump ──────────────────────────────────────────────────────────────────
+
+char *cb_ast_dump(CB_TransUnit *tu, uint32_t start_line, uint32_t end_line) {
+    ASTContext    &Ctx = tu->ast->getASTContext();
+    SourceManager &SM  = Ctx.getSourceManager();
+    FileID         fid = SM.getMainFileID();
+    LangOptions    LO  = Ctx.getLangOpts();
+
+    struct DumpEntry { std::string kind, name, type_str;
+                       uint32_t line, col, end_line, end_col; };
+    std::vector<DumpEntry> entries;
+
+    class DumpVisitor : public RecursiveASTVisitor<DumpVisitor> {
+        SourceManager &SM; FileID fid;
+        uint32_t sl, el; LangOptions LO;
+        std::vector<DumpEntry> &out;
+        bool inRange(SourceLocation loc) const {
+            SourceLocation sp = SM.getSpellingLoc(loc);
+            if (!sp.isValid() || SM.getFileID(sp) != fid) return false;
+            auto p = SM.getPresumedLoc(sp);
+            return p.isValid() && p.getLine() >= sl && p.getLine() <= el;
+        }
+    public:
+        DumpVisitor(SourceManager &sm, FileID f, uint32_t s, uint32_t e,
+                    LangOptions lo, std::vector<DumpEntry> &o)
+            : SM(sm), fid(f), sl(s), el(e), LO(lo), out(o) {}
+        bool shouldVisitTemplateInstantiations() const { return false; }
+        bool VisitNamedDecl(NamedDecl *D) {
+            if (!inRange(D->getLocation())) return true;
+            if (D->isImplicit()) return true;
+            DumpEntry e;
+            e.kind = D->getDeclKindName();
+            e.name = D->getNameAsString();
+            if (auto *VD = dyn_cast<ValueDecl>(D))
+                e.type_str = VD->getType().getAsString(PrintingPolicy(LO));
+            auto pb = SM.getPresumedLoc(SM.getSpellingLoc(D->getBeginLoc()));
+            auto pe = SM.getPresumedLoc(SM.getSpellingLoc(D->getEndLoc()));
+            e.line     = pb.isValid() ? pb.getLine()   : 0;
+            e.col      = pb.isValid() ? pb.getColumn() : 0;
+            e.end_line = pe.isValid() ? pe.getLine()   : 0;
+            e.end_col  = pe.isValid() ? pe.getColumn() : 0;
+            out.push_back(std::move(e));
+            return true;
+        }
+    } vis(SM, fid, start_line, end_line, LO, entries);
+    vis.TraverseDecl(Ctx.getTranslationUnitDecl());
+
+    auto esc = [](const std::string &s) {
+        std::string r; r.reserve(s.size());
+        for (char c : s) {
+            if      (c == '"')  r += "\\\"";
+            else if (c == '\\') r += "\\\\";
+            else if (c == '\n') r += "\\n";
+            else                r += c;
+        }
+        return r;
+    };
+    std::string json = "[";
+    bool first = true;
+    for (const auto &e : entries) {
+        if (!first) json += ","; first = false;
+        json += "{\"kind\":\"" + esc(e.kind) + "\",\"name\":\"" + esc(e.name) + "\"";
+        if (!e.type_str.empty())
+            json += ",\"type\":\"" + esc(e.type_str) + "\"";
+        json += ",\"line\":"     + std::to_string(e.line);
+        json += ",\"col\":"      + std::to_string(e.col);
+        json += ",\"end_line\":" + std::to_string(e.end_line);
+        json += ",\"end_col\":"  + std::to_string(e.end_col);
+        json += "}";
+    }
+    json += "]";
+    return strdup(json.c_str());
+}

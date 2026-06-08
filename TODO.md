@@ -53,6 +53,44 @@ API gaps and quality issues. Updated after each work session.
   `Preprocessor::getMacroInfo` hover: shows `#define` spelling, param list,
   expansion tokens, definition-location footer. Exposed as `hover::macro_hover`.
 
+- [x] **Thread-safety comment** (2026-06-08)
+  Added to `CB_TransUnit` typedef in `clang_bridge.h` and to `TranslationUnit`
+  in `src/lib.rs`: a single TU must not be accessed concurrently.
+
+- [x] **Stale completion documented** (2026-06-08)
+  `cb_complete` doc comment in `clang_bridge.h` notes that callers should
+  `cb_transunit_reparse` with the unsaved buffer before invoking completion.
+
+- [x] **`cb_highlight` / `cb_folding_ranges` / `cb_code_actions`** (2026-06-08)
+  Document highlight, folding regions, and fix-it code actions. Rust:
+  `highlight.rs`, `folding.rs`, `codeaction.rs`.
+
+- [x] **`cb_workspace_index_add` / `cb_workspace_symbols`** (2026-06-08)
+  Name→entry index on `CB_Index`; fuzzy case-insensitive prefix search.
+  Rust: `workspace.rs`.
+
+- [x] **`cb_call_hierarchy`** (2026-06-08)
+  `cb_call_hierarchy_prepare`, `cb_incoming_calls`, `cb_outgoing_calls` via
+  `CallGraphVisitor`. Rust: `callhier.rs`.
+
+- [x] **`cb_type_hierarchy`** (2026-06-08)
+  `cb_type_hierarchy_prepare`, `cb_supertypes`, `cb_subtypes` via
+  `CXXRecordDecl::bases()` and reverse USR scan. Rust: `typehier.rs`.
+
+- [x] **`cb_expand_macro`** (2026-06-08)
+  Recursive macro expansion up to 5 levels. Rust: `expand_macro` on
+  `TranslationUnit`.
+
+- [x] **`cb_ast_dump`** (2026-06-08)
+  JSON array of named declarations in a line range. Rust: `ast_dump` on
+  `TranslationUnit`.
+
+- [x] **Bridge split into per-feature .cpp files** (2026-06-08)
+  `clang_bridge.cpp` split into 13 focused files: `cb_core`, `cb_doc`,
+  `cb_diag`, `cb_inlay`, `cb_symbol`, `cb_hover`, `cb_goto`, `cb_completion`,
+  `cb_analysis`, `cb_refs`, `cb_workspace`, `cb_hierarchy`, `cb_extra`.
+  Shared types and declarations live in `cb_internal.h`.
+
 ---
 
 ## Freight LSP — 100% coverage achieved 🎉
@@ -73,127 +111,15 @@ All LSP methods needed for freight's C/C++ language server are implemented:
 | `textDocument/references` | `cb_references` |
 | `textDocument/rename` + `prepareRename` | `cb_rename` |
 | `textDocument/documentLink` | `cb_inclusions` |
+| `textDocument/documentHighlight` | `cb_highlight` |
+| `textDocument/foldingRange` | `cb_folding_ranges` |
+| `textDocument/codeAction` | `cb_code_actions` |
+| `textDocument/prepareCallHierarchy` | `cb_call_hierarchy_prepare` |
+| `callHierarchy/incomingCalls` | `cb_incoming_calls` |
+| `callHierarchy/outgoingCalls` | `cb_outgoing_calls` |
+| `textDocument/prepareTypeHierarchy` | `cb_type_hierarchy_prepare` |
+| `typeHierarchy/supertypes` | `cb_supertypes` |
+| `typeHierarchy/subtypes` | `cb_subtypes` |
+| `workspace/symbol` | `cb_workspace_symbols` |
 | Parse from memory | `cb_parse_unsaved` |
 | Parse error reporting | `cb_index_last_error` |
-
----
-
-## Correctness / quality
-
-### Thread-safety comment
-
-Add a doc comment to `CB_TransUnit` (in `clang_bridge.h`) and to
-`TranslationUnit` (in `src/lib.rs`) stating the invariant: a single TU must not
-be accessed concurrently. The Rust `&mut self` API enforces this; the C API does
-not.
-
-### Stale completion on unsaved buffer
-
-`cb_complete` runs the completer against the last-committed AST, not the
-live buffer passed in `unsaved_buf`. The unsaved buffer is forwarded to the
-completer but the AST is stale. Fix: reparse with the buffer before invoking
-`CodeComplete`, or document clearly that callers must call `cb_reparse` first.
-
----
-
-## Extra — broader API (non-freight use cases)
-
-These extend clang-bridge into a general-purpose C/C++ static analysis library,
-useful for editors, linters, documentation generators, and refactoring tools.
-
-### `cb_rename` — safe symbol rename
-
-`CB_RenameResult* cb_rename(CB_Index*, const char* usr, const char* new_name)`.
-
-Collect all reference sites from `cb_references`, verify the new name doesn't
-conflict with visible declarations, and return a sorted edit list.
-
-Maps to LSP `textDocument/rename` and `textDocument/prepareRename`.
-
----
-
-### `cb_call_hierarchy` — caller/callee graph
-
-```c
-CB_CallHierItem* cb_call_hierarchy_prepare(CB_TU*, uint32_t line, uint32_t col);
-CB_CallEdge*     cb_incoming_calls(CB_Index*, const CB_CallHierItem*, size_t* count);
-CB_CallEdge*     cb_outgoing_calls(CB_Index*, const CB_CallHierItem*, size_t* count);
-```
-
-Uses `RecursiveASTVisitor` to build the call graph for a root symbol. Useful for
-impact analysis and call-chain exploration.
-
-Maps to LSP `textDocument/prepareCallHierarchy`, `callHierarchy/incomingCalls`,
-`callHierarchy/outgoingCalls`.
-
----
-
-### `cb_type_hierarchy` — base/derived class chains
-
-```c
-CB_TypeHierItem* cb_type_hierarchy_prepare(CB_TU*, uint32_t line, uint32_t col);
-CB_TypeHierItem* cb_supertypes(CB_Index*, const CB_TypeHierItem*, size_t* count);
-CB_TypeHierItem* cb_subtypes(CB_Index*, const CB_TypeHierItem*, size_t* count);
-```
-
-Walk `CXXRecordDecl::bases()` for supertypes and scan the index for subtypes.
-Maps to LSP `textDocument/prepareTypeHierarchy`.
-
----
-
-### `cb_code_actions` — structured quick-fix list
-
-`CB_CodeAction* cb_code_actions(CB_TU*, uint32_t line, uint32_t col, size_t* count)`.
-
-- Surface fix-its from diagnostics already attached to the TU.
-- Provide stock actions: extract variable, extract function, add missing `#include`.
-
-Maps to LSP `textDocument/codeAction`.
-
----
-
-### `cb_highlight` — document highlight / all usages in file
-
-`CB_Range* cb_highlight(CB_TU*, uint32_t line, uint32_t col, size_t* count)`.
-
-Walk the TU for all reference sites of the symbol under cursor. Cheaper than
-`cb_references` because it is file-scoped. Maps to LSP
-`textDocument/documentHighlight`.
-
----
-
-### `cb_folding_ranges` — code folding regions
-
-`CB_FoldingRange* cb_folding_ranges(CB_TU*, size_t* count)`.
-
-Emit folding ranges for: function/class bodies, comment blocks, `#if`/`#endif`
-preprocessor regions, brace-enclosed blocks. Maps to LSP
-`textDocument/foldingRange`.
-
----
-
-### `cb_workspace_symbols` — fuzzy symbol search
-
-`CB_WorkspaceSymbol* cb_workspace_symbols(CB_Index*, const char* query, size_t* count)`.
-
-Maintain a name→USR index built from all parsed TUs; support fuzzy matching via
-a simple trigram or prefix index. Maps to LSP `workspace/symbol`.
-
----
-
-### `cb_expand_macro` — show full macro expansion
-
-`char* cb_expand_macro(CB_TU*, uint32_t line, uint32_t col)`.
-
-Walk `Preprocessor`'s expansion chain for the token at the cursor, render each
-expansion step. Useful as a hover enrichment or standalone linter output.
-
----
-
-### `cb_ast_dump` — raw AST as JSON
-
-`char* cb_ast_dump(CB_TU*, uint32_t start_line, uint32_t end_line)`.
-
-Serialize the AST subtree for a line range as JSON (node kind, type, range,
-children). Useful for debugging, external analysis tools, and tree-sitter parity
-checks.
