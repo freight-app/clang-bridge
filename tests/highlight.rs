@@ -94,3 +94,22 @@ fn highlight_empty_on_non_symbol() {
     // We only assert it does not panic; an empty result is perfectly fine.
     let _ = list.len();
 }
+
+/// Highlight must not contain duplicate ranges, and must classify the
+/// definition + assignment as write (kind 3) and a plain use as read (kind 2).
+#[test]
+fn highlight_dedups_and_classifies_read_write() {
+    let src = "void f() {\n    int x = 0;\n    x = 5;\n    int y = x;\n    (void)y;\n}";
+    let path = write_temp("cb_highlight_rw.cpp", src);
+    let idx = Index::new();
+    let tu = idx.parse(path.to_str().unwrap(), "", &["-std=c++17"]).unwrap();
+    let hl = highlight::highlight(&tu, 2, 9); // 'x' declaration
+
+    let mut seen = std::collections::HashSet::new();
+    for e in hl.iter() {
+        assert!(seen.insert((e.line, e.col)), "duplicate highlight at {}:{}", e.line, e.col);
+    }
+    assert_eq!(hl.iter().find(|e| e.line == 2).unwrap().kind, 3, "definition is write");
+    assert_eq!(hl.iter().find(|e| e.line == 3).unwrap().kind, 3, "assignment is write");
+    assert_eq!(hl.iter().find(|e| e.line == 4).unwrap().kind, 2, "use is read");
+}

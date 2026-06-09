@@ -110,3 +110,27 @@ fn diag_severity_ordering() {
     assert!(rank(Severity::Warning) < rank(Severity::Error),   "Warning < Error");
     assert!(rank(Severity::Error)   < rank(Severity::Fatal),   "Error < Fatal");
 }
+
+/// A type mismatch is an `Error` — not a `Fatal`. Guards the clang-Level →
+/// CB-severity mapping (a direct cast is off by one and inflates Error→Fatal).
+#[test]
+fn diag_type_error_is_error_not_fatal() {
+    let path = write_temp("cb_diag_sev_err.cpp", "void f() { int x = \"bad\"; }");
+    let idx = Index::new();
+    let tu = idx.parse(path.to_str().unwrap(), "", &["-std=c++17"]).unwrap();
+    let sevs: Vec<_> = tu.diagnostics().map(|d| d.severity).collect();
+    assert!(sevs.contains(&Severity::Error), "expected an Error, got {sevs:?}");
+    assert!(!sevs.contains(&Severity::Fatal), "type error must not be Fatal: {sevs:?}");
+}
+
+/// A "'x' declared here" note must be reported at `Note` severity, not `Remark`.
+#[test]
+fn diag_declared_here_is_note() {
+    let path = write_temp("cb_diag_note.cpp", "void print();\nvoid g() { prin(); }");
+    let idx = Index::new();
+    let tu = idx.parse(path.to_str().unwrap(), "", &["-std=c++17"]).unwrap();
+    let has_note = tu
+        .diagnostics()
+        .any(|d| d.severity == Severity::Note && d.message.contains("declared here"));
+    assert!(has_note, "expected a Note-severity 'declared here' diagnostic");
+}

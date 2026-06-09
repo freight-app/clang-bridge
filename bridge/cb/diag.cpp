@@ -26,6 +26,22 @@ struct CB_DiagIter {
     DiagEntry current; // stable storage for cb_diag_next pointer fields
 };
 
+// Map clang's DiagnosticsEngine::Level (Ignored=0, Note=1, Remark=2, Warning=3,
+// Error=4, Fatal=5) onto the CB severity scale documented in clang_bridge.h
+// (note=0, remark=1, warning=2, error=3, fatal=4).  A direct cast is off by one
+// and turns every Error into a Fatal and every Note into a Remark.
+static uint8_t cb_severity_from_level(DiagnosticsEngine::Level lvl) {
+    switch (lvl) {
+        case DiagnosticsEngine::Ignored: return 0;
+        case DiagnosticsEngine::Note:    return 0;
+        case DiagnosticsEngine::Remark:  return 1;
+        case DiagnosticsEngine::Warning: return 2;
+        case DiagnosticsEngine::Error:   return 3;
+        case DiagnosticsEngine::Fatal:   return 4;
+    }
+    return 0;
+}
+
 CB_DiagIter *cb_diag_iter(CB_TransUnit *tu) {
     auto *it = new CB_DiagIter{};
     const SourceManager &SM = tu->ast->getSourceManager();
@@ -50,7 +66,7 @@ CB_DiagIter *cb_diag_iter(CB_TransUnit *tu) {
             break; // first range is sufficient
         }
 
-        e.severity = (uint8_t)sd.getLevel();
+        e.severity = cb_severity_from_level(sd.getLevel());
         e.message  = sd.getMessage().str();
 
         // Collect fix-it hints (source replacements / quick-fixes).

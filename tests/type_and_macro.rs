@@ -74,3 +74,17 @@ fn macro_hover_returns_none_for_non_macro() {
     let result = hover::macro_hover(&tu, 1, 5);
     assert!(result.is_none(), "expected None for non-macro identifier");
 }
+
+/// `type_at` on a record-typed variable must return the class name, not None.
+/// Guards against the implicit default-construction expression shadowing the
+/// VarDecl in `locate_symbol_at`.
+#[test]
+fn type_at_returns_type_for_record_variable() {
+    let src = "struct Widget {};\nWidget w;";
+    let path = write_temp("cb_typeat_record.cpp", src);
+    let idx = Index::new();
+    let tu = idx.parse(path.to_str().unwrap(), "", &["-std=c++17"]).unwrap();
+    // line 2, col 8 → the variable `w`
+    let ty = hover::type_at(&tu, 2, 8);
+    assert_eq!(ty.as_deref(), Some("Widget"), "type_at on record var");
+}

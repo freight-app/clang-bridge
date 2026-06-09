@@ -90,6 +90,12 @@ public:
     // CXXTemporaryObjectExpr (a subclass) also hits this visitor.
     bool VisitCXXConstructExpr(CXXConstructExpr *E) {
         if (!found) {
+            // Skip implicit/elided constructions (e.g. `Widget w;` default-init):
+            // their location coincides with the *variable*, so matching here would
+            // shadow the VarDecl and make hover/type_at report the constructor
+            // instead of the variable.  Explicit `Foo(...)`/`Foo{...}` carry a
+            // valid paren/brace range.
+            if (E->getParenOrBraceRange().isInvalid()) return true;
             CXXConstructorDecl *ctor = E->getConstructor();
             if (!ctor) return true;
             StringRef className = ctor->getParent()->getName();

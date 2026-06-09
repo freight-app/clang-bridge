@@ -1,10 +1,9 @@
 //! Tests for fix-it code actions (`clang_bridge::codeaction`).
 //!
-//! `cb_code_actions` also walks `ASTUnit::stored_diag_begin/end` to collect
-//! fix-it hints.  Like `tu.diagnostics()`, stored diagnostics are only
-//! populated after a `reparse(None)` call when the unit was built via
-//! `ClangTool::buildASTs`.  Tests that need to observe real actions call
-//! `tu.reparse(None)` before `tu.code_actions(...)`.
+//! `cb_code_actions` walks `ASTUnit::stored_diag_begin/end` to collect fix-it
+//! hints.  Stored diagnostics are captured at parse time (the TU is built with
+//! `CaptureDiagsKind::All`), so actions are available immediately without a
+//! preliminary `reparse`.
 
 use clang_bridge::{codeaction, Index};
 use std::io::Write;
@@ -120,4 +119,21 @@ fn code_actions_replacement_is_valid() {
             );
         }
     }
+}
+
+/// Using `.` on a pointer yields a clang fix-it suggesting `->`; the code
+/// action must surface that replacement. Exercises the parse-time diagnostic
+/// → fix-it → code-action path end to end.
+#[test]
+fn code_action_offers_arrow_fixit() {
+    let src = "struct S { int x; };\nint f(S* s) { return s.x; }";
+    let path = write_temp("cb_codeaction_arrow.cpp", src);
+    let idx = Index::new();
+    let tu = idx.parse(path.to_str().unwrap(), "", &["-std=c++17"]).unwrap();
+    let acts = codeaction::code_actions(&tu, 2, 1);
+    assert!(
+        acts.iter().any(|a| a.replacement == "->"),
+        "expected an '->' fix-it action, got {:?}",
+        acts.iter().map(|a| (a.title, a.replacement)).collect::<Vec<_>>()
+    );
 }

@@ -224,6 +224,9 @@ class HighlightCollector : public index::IndexDataConsumer {
     const SourceManager        *SM = nullptr;
     LangOptions                 LO;
     FileID                      main_fid;
+    // The indexer can report one occurrence twice; dedup by line:col so the
+    // highlight list never contains duplicate ranges.
+    std::unordered_set<std::string> seen;
 public:
     HighlightCollector(const std::string &usr, std::vector<HighlightEntry> &o,
                        const LangOptions &lo, FileID fid)
@@ -242,6 +245,9 @@ public:
         if (SM->getFileID(Loc) != main_fid) return true;
         auto p = SM->getPresumedLoc(Loc);
         if (!p.isValid()) return true;
+        std::string key = std::to_string(p.getLine()) + ":"
+                        + std::to_string(p.getColumn());
+        if (!seen.insert(key).second) return true;
         unsigned tok_len = Lexer::MeasureTokenLength(Loc, *SM, LO);
         using SR = index::SymbolRole;
         bool is_write = (Roles & ((index::SymbolRoleSet)SR::Definition |
