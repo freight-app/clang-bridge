@@ -12,8 +12,14 @@ static std::string commentInlineText(const comments::Comment *C) {
             t = t.drop_front();
         return t.str();
     }
-    for (auto it = C->child_begin(); it != C->child_end(); ++it)
-        out += commentInlineText(*it);
+    // A paragraph's lines are separate TextComment children; join them with a
+    // space so wrapped sentences don't run together ("line.More detail").
+    for (auto it = C->child_begin(); it != C->child_end(); ++it) {
+        std::string piece = commentInlineText(*it);
+        if (piece.empty()) continue;
+        if (!out.empty() && out.back() != ' ') out += ' ';
+        out += piece;
+    }
     return out;
 }
 

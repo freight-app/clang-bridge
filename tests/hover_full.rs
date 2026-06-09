@@ -67,3 +67,18 @@ fn hover_template_function_includes_template_params() {
         "expected template params in hover signature, got: {md}"
     );
 }
+
+/// A multi-line `///` paragraph must render with its lines space-joined, not
+/// concatenated ("Brief line.More detail" → "Brief line. More detail").
+#[test]
+fn hover_full_joins_paragraph_lines_with_space() {
+    let path = write_temp(
+        "cb_hover_para.cpp",
+        "/// Brief line.\n/// More detail here.\nint fn(int x);",
+    );
+    let idx = Index::new();
+    let tu = idx.parse(path.to_str().unwrap(), "", &["-std=c++17"]).unwrap();
+    let md = hover::hover_full(&tu, 3, 5).expect("hover");
+    assert!(md.contains("Brief line. More detail here."), "lines should be space-joined:\n{md}");
+    assert!(!md.contains("line.More"), "lines must not run together:\n{md}");
+}
