@@ -113,17 +113,28 @@ struct CB_SemanticTokenList {
 
 /// Map a NamedDecl to the LSP/CB semantic token type.
 static uint8_t semtokForDecl(const NamedDecl *D) {
-    if (isa<NamespaceDecl>(D))      return CB_TOK_NAMESPACE;
-    if (isa<TypedefNameDecl>(D))    return CB_TOK_TYPE;
+    if (isa<NamespaceDecl>(D))           return CB_TOK_NAMESPACE;
+    if (isa<TypedefNameDecl>(D))         return CB_TOK_TYPE;
+    // Template decls: classify like the entity they introduce so they don't
+    // fall through to VARIABLE (and so they agree with the templated inner decl
+    // that shares their source location — see the dedup in cb_semantic_tokens).
+    if (isa<TypeAliasTemplateDecl>(D))   return CB_TOK_TYPE;
+    if (isa<TemplateTypeParmDecl>(D))    return CB_TOK_TYPE;
+    if (isa<ClassTemplateDecl>(D))       return CB_TOK_TYPE;
     if (isa<CXXRecordDecl>(D) ||
         isa<RecordDecl>(D) ||
-        isa<EnumDecl>(D))           return CB_TOK_TYPE;
-    if (isa<EnumConstantDecl>(D))   return CB_TOK_ENUM_MEMBER;
-    if (isa<FieldDecl>(D))          return CB_TOK_PROPERTY;
-    if (isa<ParmVarDecl>(D))        return CB_TOK_PARAMETER;
-    if (isa<VarDecl>(D))            return CB_TOK_VARIABLE;
-    if (isa<CXXMethodDecl>(D))      return CB_TOK_METHOD;
-    if (isa<FunctionDecl>(D))       return CB_TOK_FUNCTION;
+        isa<EnumDecl>(D))                return CB_TOK_TYPE;
+    if (isa<EnumConstantDecl>(D))        return CB_TOK_ENUM_MEMBER;
+    if (isa<FieldDecl>(D))               return CB_TOK_PROPERTY;
+    if (isa<NonTypeTemplateParmDecl>(D)) return CB_TOK_PARAMETER;
+    if (isa<ParmVarDecl>(D))             return CB_TOK_PARAMETER;
+    if (auto *FTD = dyn_cast<FunctionTemplateDecl>(D))
+        return isa<CXXMethodDecl>(FTD->getTemplatedDecl())
+                   ? CB_TOK_METHOD : CB_TOK_FUNCTION;
+    if (isa<VarTemplateDecl>(D))         return CB_TOK_VARIABLE;
+    if (isa<VarDecl>(D))                 return CB_TOK_VARIABLE;
+    if (isa<CXXMethodDecl>(D))           return CB_TOK_METHOD;
+    if (isa<FunctionDecl>(D))            return CB_TOK_FUNCTION;
     return CB_TOK_VARIABLE;
 }
 
@@ -226,6 +237,15 @@ CB_SemanticTokenList *cb_semantic_tokens(CB_TransUnit *tu) {
               [](const SemanticTokenEntry &a, const SemanticTokenEntry &b) {
                   return a.line != b.line ? a.line < b.line : a.col < b.col;
               });
+    // Collapse tokens sharing a (line, col): a ClassTemplateDecl and its
+    // templated CXXRecordDecl (or a function template and its inner decl) both
+    // report the same name at the same location.
+    list->tokens.erase(
+        std::unique(list->tokens.begin(), list->tokens.end(),
+                    [](const SemanticTokenEntry &a, const SemanticTokenEntry &b) {
+                        return a.line == b.line && a.col == b.col;
+                    }),
+        list->tokens.end());
     return list;
 }
 

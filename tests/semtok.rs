@@ -50,3 +50,32 @@ fn semantic_tokens_classify_type() {
     let type_toks: Vec<_> = toks.iter().filter(|t| t.token_type == tok_type::TYPE).collect();
     assert!(!type_toks.is_empty(), "expected TYPE token for struct Point");
 }
+
+/// A class template must emit exactly one token (TYPE) for its name — the
+/// ClassTemplateDecl and its templated CXXRecordDecl share a location and must
+/// not produce a duplicate (one of which previously fell through to VARIABLE).
+/// The template type parameter is also a TYPE, not a VARIABLE.
+#[test]
+fn semantic_tokens_class_template_single_type_token() {
+    let decl = "template<class T> struct Vec { T at(int); };";
+    let src = format!("{decl}\nVec<int> v;");
+    let path = write_temp("cb_semtok_tmpl.cpp", &src);
+    let idx = Index::new();
+    let tu = idx.parse(path.to_str().unwrap(), "", &["-std=c++17"]).unwrap();
+    let toks = semtok::semantic_tokens(&tu);
+
+    let vec_col = decl.find("Vec").unwrap() as u32 + 1;
+    let at_vec: Vec<_> = toks.iter().filter(|t| t.line == 1 && t.col == vec_col).collect();
+    assert_eq!(at_vec.len(), 1, "exactly one token for the template name, got {at_vec:?}");
+    assert_eq!(at_vec[0].token_type, tok_type::TYPE, "class template name is a TYPE");
+
+    let t_col = decl.find("T>").unwrap() as u32 + 1;
+    if let Some(t) = toks.iter().find(|t| t.line == 1 && t.col == t_col) {
+        assert_eq!(t.token_type, tok_type::TYPE, "template type parameter is a TYPE");
+    }
+
+    let mut seen = std::collections::HashSet::new();
+    for t in toks.iter() {
+        assert!(seen.insert((t.line, t.col)), "duplicate token at {}:{}", t.line, t.col);
+    }
+}
