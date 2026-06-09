@@ -314,3 +314,56 @@ members), call hierarchy (free functions + methods), `signature_help`
 (active-param progression through nested calls, multiple overloads), and inlay
 hints (param, deduced type, block-end ≥10 lines, designator, and clangd-style
 suppression when an argument's spelling equals the parameter name).
+
+---
+
+## Bugs found by deeper edge-case probing (round 2)
+
+### B-13 — class templates produced a duplicate/mis-typed semantic token
+
+**File:** `bridge/cb/analysis.cpp` (`semtokForDecl`, `cb_semantic_tokens`)
+
+`semtokForDecl`'s default returned VARIABLE, so a `ClassTemplateDecl` was tagged
+VARIABLE while its inner `CXXRecordDecl` was TYPE — two tokens at one location.
+Template type parameters were also VARIABLE. Classify template decls by the
+entity they introduce and dedup tokens sharing a (line,col).
+
+### B-14 — `cb_inclusions` returned transitive system includes
+
+**File:** `bridge/cb/analysis.cpp` (`collect_inclusions`)
+
+It walked every file SLocEntry in the TU, so `#include <cstddef>` surfaced dozens
+of nested system headers. documentLink is per-open-document; filter to
+`SM.getFileID(incLoc) == getMainFileID()`.
+
+### B-15 — `document_symbols` omitted constructors/destructors/operators
+
+**File:** `bridge/cb/doc.cpp` (`DocSymVisitor::skip`)
+
+`skip()` rejected every non-identifier name, so special members never reached the
+outline though `add()` renders them safely via `getNameAsString()`. Only apply
+the empty-name check to identifier names.
+
+### B-16 — `goto_definition` did nothing on a macro
+
+**File:** `bridge/cb/goto.cpp` (`cb_goto_definition`)
+
+Added a macro fallback: when no AST symbol is under the cursor, resolve a live
+macro and return its `#define` location (`MacroInfo::getDefinitionLoc`).
+
+### B-17 — `hover_full` ran multi-line paragraph comments together
+
+**File:** `bridge/cb/hover.cpp` (`commentInlineText`)
+
+A paragraph's per-line `TextComment` children were concatenated with no
+separator ("Brief line.More detail here."). Join them with a single space.
+
+## Round-2 functions verified correct (no fix needed)
+
+`format` (spacing edits, style-dir), type hierarchy (direct-only super/subtypes),
+references (separate decl/def/call, overload-specific, field/method, deduped),
+rename (`old_name_len`, edit sites), call hierarchy (recursion + multiple
+callers), workspace symbol kinds, `type_at` (array/reference/auto), hover on
+overloaded calls (resolves the chosen overload), completion after `::`, inlay in
+range-for and array designators, and `document_symbols` nesting for nested
+namespaces / enums / templates.
