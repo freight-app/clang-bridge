@@ -19,8 +19,10 @@ static uint8_t lspKindFor(CodeCompletionResult::ResultKind rk,
     if (rk == CodeCompletionResult::RK_Macro)    return 15; // Snippet-ish, use Text
     switch (ck) {
         case CXCursor_FunctionDecl:
-        case CXCursor_CXXMethod:
         case CXCursor_FunctionTemplate:  return 3;  // Function
+        case CXCursor_CXXMethod:
+        case CXCursor_Destructor:
+        case CXCursor_ConversionFunction: return 2; // Method
         case CXCursor_Constructor:       return 4;  // Constructor
         case CXCursor_FieldDecl:         return 5;  // Field
         case CXCursor_VarDecl:

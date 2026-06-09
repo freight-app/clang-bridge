@@ -55,3 +55,21 @@ fn completion_returns_items() {
         "expected struct member completions, got: {labels:?}"
     );
 }
+
+#[test]
+fn completion_kinds_field_and_method() {
+    // Member completion must classify a field as Field(5) and a member
+    // function as Method(2) — not Function(3).
+    let src = "struct Foo { int bar; double baz() const; };\nvoid u(){ Foo f; f. }";
+    let path = write_temp("cb_lsp_complete_kinds.cpp", src);
+    let idx = Index::new();
+    let tu = idx.parse(path.to_str().unwrap(), "", &["-std=c++17"]).unwrap();
+    let line = "void u(){ Foo f; f. }";
+    let col = line.rfind('.').unwrap() as u32 + 2; // just past the dot
+    let items: Vec<_> = completion::complete(&tu, 2, col, None).collect();
+    let bar = items.iter().find(|i| i.label == "bar").expect("field bar");
+    assert_eq!(bar.kind, 5, "field → Field(5)");
+    assert_eq!(bar.detail.as_deref(), Some("int"), "field detail is its type");
+    let baz = items.iter().find(|i| i.label == "baz").expect("method baz");
+    assert_eq!(baz.kind, 2, "member function → Method(2)");
+}
