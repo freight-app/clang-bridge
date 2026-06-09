@@ -54,3 +54,29 @@ fn inclusions_records_directive_line() {
         );
     }
 }
+
+/// `cb_inclusions` backs LSP documentLink for the open document, so it must
+/// return only directives written in the main file — never the transitive
+/// system headers a `<...>` include pulls in.
+#[test]
+fn inclusions_only_main_file_directives() {
+    write_temp("cb_incl_local.h", "int helper();\n");
+    let main = write_temp(
+        "cb_incl_main.cpp",
+        "#include <cstddef>\n#include \"cb_incl_local.h\"\nint x;",
+    );
+    let dir = std::env::temp_dir();
+    let idx = Index::new();
+    let tu = idx
+        .parse(main.to_str().unwrap(), dir.to_str().unwrap(), &["-std=c++17"])
+        .unwrap();
+    let incs: Vec<_> = inclusion::inclusions(&tu).iter().collect();
+    assert_eq!(
+        incs.len(), 2,
+        "expected exactly the 2 main-file includes, got {:?}",
+        incs.iter().map(|i| i.included_file.clone()).collect::<Vec<_>>()
+    );
+    assert!(incs.iter().all(|i| i.including_file.ends_with("cb_incl_main.cpp")));
+    assert!(incs.iter().any(|i| i.included_file.ends_with("cb_incl_local.h")));
+    assert!(incs.iter().any(|i| i.included_file.ends_with("cstddef")));
+}

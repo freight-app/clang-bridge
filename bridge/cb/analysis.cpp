@@ -32,6 +32,10 @@ static void collect_inclusions(ASTUnit *ast,
 
         // The include location is in the including file.
         SourceLocation incLoc = FI.getIncludeLoc();
+        // Only report directives written in the main file: cb_inclusions backs
+        // LSP textDocument/documentLink for the open document, so transitive
+        // includes pulled in by system headers must not be returned.
+        if (SM.getFileID(incLoc) != SM.getMainFileID()) continue;
         auto presumed = SM.getPresumedLoc(incLoc);
         if (!presumed.isValid()) continue;
 
