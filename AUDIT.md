@@ -222,3 +222,36 @@ Covering all untested APIs:
 | `tests/typehier.rs` | `type_hierarchy_prepare`, `supertypes`, `subtypes` |
 | `tests/expand_macro.rs` | `expand_macro` for object-like and function-like macros |
 | `tests/ast_dump.rs` | `ast_dump` returns valid JSON with expected fields |
+
+---
+
+## Bugs found by the on-disk fixture (`tests/fixtures/test.cpp` + `tests/fixture_api.rs`)
+
+Running every API against one real, multi-construct file surfaced two
+correctness defects that the small per-feature snippets had missed.
+
+### B-7 — `cb_references` / `cb_rename` emit a duplicate occurrence
+
+**File:** `bridge/cb_refs.cpp` (`RefCollector::handleDeclOccurrence`)
+
+The Clang indexer reports some occurrences twice (e.g. a call used to initialise
+an `auto` variable is visited in two contexts). The reference list therefore
+contained a duplicate `(file,line,col)`, and because `cb_rename` is built on the
+same collector, rename produced two edits at one location — which would
+double-apply on accept.
+
+**Fix:** dedup by `file:line:col` inside `RefCollector` before pushing. Verified
+by `references_finds_definition_and_two_calls` (now exactly 3, was 4).
+
+### B-8 — `cb_semantic_tokens` never emitted `CB_TOK_MACRO` tokens
+
+**File:** `bridge/cb_analysis.cpp` (macro-annotation loop in `cb_semantic_tokens`)
+
+The loop lexed the token at each expansion's **spelling** location (the macro
+*body*, e.g. `128` or `(`) instead of its **invocation** location, so the lexed
+token was never the macro-name identifier and every candidate was rejected. No
+macro was ever highlighted.
+
+**Fix:** lex at `getExpansionLoc(...)` (the invocation site) to recover the macro
+name, and dedup by invocation offset so nested expansions of one function-like
+invocation emit a single token. Verified by `semantic_tokens_classify_each_kind`.

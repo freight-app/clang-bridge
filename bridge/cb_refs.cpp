@@ -12,6 +12,10 @@ public:
     const std::string          &target_usr;
     std::vector<ReferenceEntry> &refs;
     const SourceManager        *SM = nullptr;
+    // The indexer can report the same source location more than once (e.g. an
+    // initializer visited in two contexts).  Dedup by file:line:col so callers
+    // — including rename — never see a duplicate occurrence.
+    std::unordered_set<std::string> seen;
 
     RefCollector(const std::string &usr, std::vector<ReferenceEntry> &out)
         : target_usr(usr), refs(out) {}
@@ -36,6 +40,11 @@ public:
         if (SM->isInSystemHeader(Loc)) return true;
         auto p = SM->getPresumedLoc(Loc);
         if (!p.isValid()) return true;
+
+        std::string key = std::string(p.getFilename() ? p.getFilename() : "")
+                        + ":" + std::to_string(p.getLine())
+                        + ":" + std::to_string(p.getColumn());
+        if (!seen.insert(key).second) return true;
 
         using SR = index::SymbolRole;
         bool is_def = (Roles & (index::SymbolRoleSet)SR::Definition) != 0;

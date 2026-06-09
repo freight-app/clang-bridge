@@ -184,28 +184,34 @@ CB_SemanticTokenList *cb_semantic_tokens(CB_TransUnit *tu) {
     SemanticTokenVisitor V(Ctx, list->tokens);
     V.TraverseDecl(Ctx.getTranslationUnitDecl());
 
-    // Annotate macro use sites as CB_TOK_MACRO.
+    // Annotate macro use sites as CB_TOK_MACRO.  Every macro invocation creates
+    // one or more expansion SLocEntries; we lex the identifier at the *invocation*
+    // location (getExpansionLoc — not the macro body's spelling location) to get
+    // the macro name, and dedup by invocation offset so nested expansions of one
+    // invocation (e.g. a function-like macro body) yield a single token.
     const SourceManager &SM = Ctx.getSourceManager();
-    Preprocessor &PP = tu->ast->getPreprocessor();
-    // Walk all macro expansions in the main file via the SourceManager.
+    std::unordered_set<unsigned> seen_macro_locs;
     unsigned n = SM.local_sloc_entry_size();
     for (unsigned i = 1; i < n; ++i) {
         const SrcMgr::SLocEntry &sle = SM.getLocalSLocEntry(i);
         if (sle.isFile()) continue; // only expansion records
-        SourceLocation expansionLoc = SM.getExpansionLoc(sle.getExpansion().getExpansionLocStart());
+        SourceLocation expansionLoc =
+            SM.getExpansionLoc(sle.getExpansion().getExpansionLocStart());
+        if (expansionLoc.isInvalid()) continue;
         if (SM.isInSystemHeader(expansionLoc)) continue;
+        if (!seen_macro_locs.insert(expansionLoc.getRawEncoding()).second)
+            continue;
         auto p = SM.getPresumedLoc(expansionLoc);
         if (!p.isValid()) continue;
 
-        // Look up the macro name at the expansion start.
-        SourceLocation spellLoc = SM.getSpellingLoc(sle.getExpansion().getSpellingLoc());
+        // Lex the macro-name identifier at the invocation site.
         Token tok;
-        if (Lexer::getRawToken(spellLoc, tok, SM, Ctx.getLangOpts(), false))
+        if (Lexer::getRawToken(expansionLoc, tok, SM, Ctx.getLangOpts(),
+                               /*IgnoreWhiteSpace=*/true))
             continue;
+        if (tok.isNot(tok::raw_identifier)) continue;
         std::string spelling = Lexer::getSpelling(tok, SM, Ctx.getLangOpts());
         if (spelling.empty()) continue;
-        const IdentifierInfo *II = PP.getIdentifierInfo(spelling);
-        if (!II || !PP.getMacroInfo(II)) continue;
 
         SemanticTokenEntry t;
         t.line       = p.getLine();
