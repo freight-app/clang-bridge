@@ -73,3 +73,14 @@ fn completion_kinds_field_and_method() {
     let baz = items.iter().find(|i| i.label == "baz").expect("method baz");
     assert_eq!(baz.kind, 2, "member function → Method(2)");
 }
+
+#[test]
+fn goto_definition_on_macro_jumps_to_define() {
+    // Goto on a macro use should navigate to its #define line.
+    let path = write_temp("cb_lsp_goto_macro.cpp", "#define LIMIT 10\nint a = LIMIT;");
+    let idx = Index::new();
+    let tu = idx.parse(path.to_str().unwrap(), "", &["-std=c++17"]).unwrap();
+    let col = "int a = LIMIT;".find("LIMIT").unwrap() as u32 + 1;
+    let loc = goto::goto_definition(&tu, 2, col).expect("goto on macro use");
+    assert_eq!(loc.line, 1, "LIMIT is #defined on line 1");
+}

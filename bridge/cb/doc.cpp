@@ -135,10 +135,13 @@ public:
     bool shouldVisitTemplateInstantiations() const { return false; }
 
     bool skip(const NamedDecl *ND) const {
-        // Non-identifier names (constructors, operators, etc.) are not useful
-        // in the document symbol outline and getName() asserts on them.
-        if (!ND->getDeclName().isIdentifier()) return true;
-        return SM.isInSystemHeader(ND->getLocation()) || ND->getName().empty();
+        if (SM.isInSystemHeader(ND->getLocation())) return true;
+        // Constructors, destructors, operators and conversions have
+        // non-identifier names but belong in the outline; add() uses
+        // getNameAsString() (safe) to render them as "S" / "~S" / "operator=".
+        // getName() asserts on non-identifiers, so only test it for identifiers.
+        if (ND->getDeclName().isIdentifier()) return ND->getName().empty();
+        return false;
     }
 
     // Add ND to entries with the given parent index (-2 = use parent_stack.back()).

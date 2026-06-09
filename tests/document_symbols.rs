@@ -99,3 +99,19 @@ fn document_symbols_namespace_nesting() {
         "expected function square nested under math, got: {syms:?}"
     );
 }
+
+/// Constructors, destructors and operator overloads have non-identifier names
+/// but must still appear in the outline (rendered as "S" / "~S" / "operator=").
+#[test]
+fn document_symbols_include_special_members() {
+    let syms = collect(
+        "special",
+        "struct S {\n  S();\n  ~S();\n  S& operator=(const S&);\n  int operator+(int x);\n};",
+    );
+    let names: Vec<&str> = syms.iter().map(|(n, _, _)| n.as_str()).collect();
+    // struct S + constructor named S → at least two "S" entries.
+    assert!(names.iter().filter(|n| **n == "S").count() >= 2, "ctor + struct: {names:?}");
+    assert!(names.contains(&"~S"), "destructor present: {names:?}");
+    assert!(names.contains(&"operator="), "operator= present: {names:?}");
+    assert!(names.contains(&"operator+"), "operator+ present: {names:?}");
+}
