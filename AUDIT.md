@@ -255,3 +255,62 @@ macro was ever highlighted.
 **Fix:** lex at `getExpansionLoc(...)` (the invocation site) to recover the macro
 name, and dedup by invocation offset so nested expansions of one function-like
 invocation emit a single token. Verified by `semantic_tokens_classify_each_kind`.
+
+---
+
+## Bugs found by per-function output probing
+
+Probing each API's *actual output* against an independently-derived expectation
+(rather than just "non-empty") surfaced four more correctness defects.
+
+### B-9 — diagnostic severity was off by one
+
+**File:** `bridge/cb/diag.cpp` (`cb_diag_iter`)
+
+`clang`'s `DiagnosticsEngine::Level` (`Ignored=0, Note=1, Remark=2, Warning=3,
+Error=4, Fatal=5`) was cast directly into the CB severity scale (`note=0,
+remark=1, warning=2, error=3, fatal=4`). Every Error was reported as Fatal and
+every Note as Remark. The existing diag tests masked it by OR-ing `Error|Fatal`.
+
+**Fix:** explicit `cb_severity_from_level()` mapping. Regression:
+`diag_type_error_is_error_not_fatal`, `diag_declared_here_is_note`.
+
+### B-10 — `cb_highlight` emitted duplicate ranges
+
+**File:** `bridge/cb/refs.cpp` (`HighlightCollector::handleDeclOccurrence`)
+
+Same class of bug as B-7: the indexer reports an occurrence twice (a read site
+appeared twice). Deduped by `line:col`. Regression:
+`highlight_dedups_and_classifies_read_write`.
+
+### B-11 — `cb_type_at` returned None for record-typed variables
+
+**File:** `bridge/cb/symbol.cpp` (`RefLocator::VisitCXXConstructExpr`)
+
+For `Widget w;` the implicit default-construction `CXXConstructExpr` is located
+on the *variable*; `RefLocator` matched it (the class name spans the variable
+columns) and returned the constructor, shadowing the `VarDecl`. `type_at` then
+saw a `CXXConstructorDecl` and returned None; hover showed the constructor.
+
+**Fix:** skip constructions whose paren/brace range is invalid (implicit
+default-init). Explicit `Foo(...)`/`Foo{...}` still resolve to the constructor.
+Regression: `type_at_returns_type_for_record_variable`.
+
+### B-12 — completion item kinds misclassified methods and destructors
+
+**File:** `bridge/cb/completion.cpp` (`lspKindFor`)
+
+`CXCursor_CXXMethod` mapped to `Function(3)` (should be `Method(2)`), and
+destructors / conversion functions fell through to `Text(1)`. Mapped
+`CXXMethod`/`Destructor`/`ConversionFunction` → `Method(2)`. Regression:
+`completion_kinds_field_and_method`.
+
+## Functions verified correct (no fix needed)
+
+`expand_macro` (recursive nesting), `macro_hover`, `hover_full`
+(class/method/field/var), `document_symbols` (ranges/selection/detail),
+`goto_definition` (same-file + cross-file), `ast_dump` (functions + class
+members), call hierarchy (free functions + methods), `signature_help`
+(active-param progression through nested calls, multiple overloads), and inlay
+hints (param, deduced type, block-end ≥10 lines, designator, and clangd-style
+suppression when an argument's spelling equals the parameter name).
