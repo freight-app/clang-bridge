@@ -1,4 +1,4 @@
-#include "cb_internal.h"
+#include "internal.h"
 
 // ── References — all usages of a USR within a TU ─────────────────────────────
 

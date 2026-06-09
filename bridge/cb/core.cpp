@@ -1,4 +1,4 @@
-#include "cb_internal.h"
+#include "internal.h"
 
 // getName() asserts when the DeclarationName is not a plain identifier
 // (constructors, destructors, operators, conversion functions).  Use this

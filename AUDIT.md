@@ -47,7 +47,7 @@ But the bridge emits four kinds:
 
 ### B-2 — `cb_highlight` misclassifies non-definition declarations as Read
 
-**File:** `bridge/cb_refs.cpp` line 243–245  
+**File:** `bridge/cb/refs.cpp` line 243–245  
 **Severity:** Low (kind field is wrong for declarations that aren't the definition).
 
 Current code classifies every occurrence as either Write/Definition (3) or Read (2):
@@ -74,7 +74,7 @@ out.push_back({..., is_write ? (uint8_t)3 : (uint8_t)2});
 
 ### B-3 — `cb_inclusions` start_col / end_col are always equal
 
-**File:** `bridge/cb_analysis.cpp` lines 48–50  
+**File:** `bridge/cb/analysis.cpp` lines 48–50  
 **Severity:** Medium (LSP `documentLink` range is wrong; every link points to a zero-width range).
 
 ```cpp
@@ -96,7 +96,7 @@ then set `start_col` / `end_col` from that token's start and end columns.
 
 ### B-4 — `cb_workspace_symbols("")` returns zero results instead of all symbols
 
-**File:** `bridge/cb_workspace.cpp` line 50 / `bridge/clang_bridge.h` line 471  
+**File:** `bridge/cb/workspace.cpp` line 50 / `bridge/clang_bridge.h` line 471  
 **Severity:** Medium (LSP spec says empty query = return all symbols or a capped subset).
 
 The C++ implementation:
@@ -131,9 +131,9 @@ this version of Clang — it was the earlier unavailable method `getLocalComment
 
 ---
 
-### B-6 — `cb_hierarchy.cpp` has a dangling trailing comment
+### B-6 — `hierarchy.cpp` has a dangling trailing comment
 
-**File:** `bridge/cb_hierarchy.cpp` line 299  
+**File:** `bridge/cb/hierarchy.cpp` line 299  
 **Severity:** Cosmetic.
 
 The file ends with:
@@ -141,7 +141,7 @@ The file ends with:
 // ── Macro expansion ───────────────────────────────────────────────────────────
 ```
 
-Macro expansion is in `cb_extra.cpp`. The comment was left over from the split and is misleading.
+Macro expansion is in `extra.cpp`. The comment was left over from the split and is misleading.
 
 **Fix:** Delete the trailing comment.
 
@@ -161,7 +161,7 @@ to test this flow.
 
 ### Q-2 — `cb_semantic_tokens` emits tokens for both declarations and reference sites
 
-**File:** `bridge/cb_analysis.cpp`
+**File:** `bridge/cb/analysis.cpp`
 
 `SemanticTokenVisitor` visits both:
 - `VisitNamedDecl` → declaration-site token
@@ -174,7 +174,7 @@ the decl and the definition). This is also fine. No change needed.
 
 ### Q-3 — `cb_code_actions` only surfaces fix-its, no stock LSP actions
 
-**File:** `bridge/cb_extra.cpp`
+**File:** `bridge/cb/extra.cpp`
 
 Only fix-it diagnostics from stored diagnostics are returned. LSP `codeAction` clients also
 expect stock actions: "Add missing #include", "Extract variable", "Convert to range-based for",
@@ -183,7 +183,7 @@ a future enhancement, not a bug.
 
 ### Q-4 — `cb_call_hierarchy_prepare` does not handle lambda expressions
 
-**File:** `bridge/cb_hierarchy.cpp` line 25
+**File:** `bridge/cb/hierarchy.cpp` line 25
 
 ```cpp
 if (!isa<FunctionDecl>(ND)) return nullptr;
@@ -195,7 +195,7 @@ implementation; future work.
 
 ### Q-5 — `cb_workspace_index_add` adds duplicate entries on reparse
 
-**File:** `bridge/cb_workspace.cpp`
+**File:** `bridge/cb/workspace.cpp`
 
 Each call to `cb_workspace_index_add` appends new entries to the multimap without removing old
 ones for the same file. After `reparse()` + `workspace_index_add()`, the file's symbols appear
@@ -232,7 +232,7 @@ correctness defects that the small per-feature snippets had missed.
 
 ### B-7 — `cb_references` / `cb_rename` emit a duplicate occurrence
 
-**File:** `bridge/cb_refs.cpp` (`RefCollector::handleDeclOccurrence`)
+**File:** `bridge/cb/refs.cpp` (`RefCollector::handleDeclOccurrence`)
 
 The Clang indexer reports some occurrences twice (e.g. a call used to initialise
 an `auto` variable is visited in two contexts). The reference list therefore
@@ -245,7 +245,7 @@ by `references_finds_definition_and_two_calls` (now exactly 3, was 4).
 
 ### B-8 — `cb_semantic_tokens` never emitted `CB_TOK_MACRO` tokens
 
-**File:** `bridge/cb_analysis.cpp` (macro-annotation loop in `cb_semantic_tokens`)
+**File:** `bridge/cb/analysis.cpp` (macro-annotation loop in `cb_semantic_tokens`)
 
 The loop lexed the token at each expansion's **spelling** location (the macro
 *body*, e.g. `128` or `(`) instead of its **invocation** location, so the lexed

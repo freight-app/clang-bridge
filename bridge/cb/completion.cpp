@@ -1,4 +1,4 @@
-#include "cb_internal.h"
+#include "internal.h"
 
 #include <clang/Frontend/FrontendActions.h>
 #include <clang/Sema/CodeCompleteConsumer.h>

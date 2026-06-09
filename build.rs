@@ -16,19 +16,19 @@ fn main() {
     cc::Build::new()
         .cpp(true)
         .compiler(&cxx)
-        .file("bridge/cb/cb_core.cpp")
-        .file("bridge/cb/cb_doc.cpp")
-        .file("bridge/cb/cb_diag.cpp")
-        .file("bridge/cb/cb_inlay.cpp")
-        .file("bridge/cb/cb_symbol.cpp")
-        .file("bridge/cb/cb_hover.cpp")
-        .file("bridge/cb/cb_goto.cpp")
-        .file("bridge/cb/cb_completion.cpp")
-        .file("bridge/cb/cb_analysis.cpp")
-        .file("bridge/cb/cb_refs.cpp")
-        .file("bridge/cb/cb_workspace.cpp")
-        .file("bridge/cb/cb_hierarchy.cpp")
-        .file("bridge/cb/cb_extra.cpp")
+        .file("bridge/cb/core.cpp")
+        .file("bridge/cb/doc.cpp")
+        .file("bridge/cb/diag.cpp")
+        .file("bridge/cb/inlay.cpp")
+        .file("bridge/cb/symbol.cpp")
+        .file("bridge/cb/hover.cpp")
+        .file("bridge/cb/goto.cpp")
+        .file("bridge/cb/completion.cpp")
+        .file("bridge/cb/analysis.cpp")
+        .file("bridge/cb/refs.cpp")
+        .file("bridge/cb/workspace.cpp")
+        .file("bridge/cb/hierarchy.cpp")
+        .file("bridge/cb/extra.cpp")
         .include("bridge")
         .flag("-std=c++17")
         .flag("-fno-rtti")
@@ -56,21 +56,21 @@ fn main() {
     println!("cargo:rustc-link-lib=dylib=LLVM");
     println!("cargo:rustc-link-lib=dylib=stdc++");
 
-    println!("cargo:rerun-if-changed=bridge/cb/cb_internal.h");
+    println!("cargo:rerun-if-changed=bridge/cb/internal.h");
     println!("cargo:rerun-if-changed=bridge/clang_bridge.h");
-    println!("cargo:rerun-if-changed=bridge/cb/cb_core.cpp");
-    println!("cargo:rerun-if-changed=bridge/cb/cb_doc.cpp");
-    println!("cargo:rerun-if-changed=bridge/cb/cb_diag.cpp");
-    println!("cargo:rerun-if-changed=bridge/cb/cb_inlay.cpp");
-    println!("cargo:rerun-if-changed=bridge/cb/cb_symbol.cpp");
-    println!("cargo:rerun-if-changed=bridge/cb/cb_hover.cpp");
-    println!("cargo:rerun-if-changed=bridge/cb/cb_goto.cpp");
-    println!("cargo:rerun-if-changed=bridge/cb/cb_completion.cpp");
-    println!("cargo:rerun-if-changed=bridge/cb/cb_analysis.cpp");
-    println!("cargo:rerun-if-changed=bridge/cb/cb_refs.cpp");
-    println!("cargo:rerun-if-changed=bridge/cb/cb_workspace.cpp");
-    println!("cargo:rerun-if-changed=bridge/cb/cb_hierarchy.cpp");
-    println!("cargo:rerun-if-changed=bridge/cb/cb_extra.cpp");
+    println!("cargo:rerun-if-changed=bridge/cb/core.cpp");
+    println!("cargo:rerun-if-changed=bridge/cb/doc.cpp");
+    println!("cargo:rerun-if-changed=bridge/cb/diag.cpp");
+    println!("cargo:rerun-if-changed=bridge/cb/inlay.cpp");
+    println!("cargo:rerun-if-changed=bridge/cb/symbol.cpp");
+    println!("cargo:rerun-if-changed=bridge/cb/hover.cpp");
+    println!("cargo:rerun-if-changed=bridge/cb/goto.cpp");
+    println!("cargo:rerun-if-changed=bridge/cb/completion.cpp");
+    println!("cargo:rerun-if-changed=bridge/cb/analysis.cpp");
+    println!("cargo:rerun-if-changed=bridge/cb/refs.cpp");
+    println!("cargo:rerun-if-changed=bridge/cb/workspace.cpp");
+    println!("cargo:rerun-if-changed=bridge/cb/hierarchy.cpp");
+    println!("cargo:rerun-if-changed=bridge/cb/extra.cpp");
 }
 
 fn find_clangxx() -> String {

@@ -70,7 +70,7 @@ struct CB_TransUnit {
     std::unique_ptr<ASTUnit> ast;
 };
 
-// ── Shared helper declarations (defined in cb_core.cpp) ───────────────────────
+// ── Shared helper declarations (defined in core.cpp) ──────────────────────────
 
 StringRef   safeDeclName(const NamedDecl *D);
 std::string declKind(const NamedDecl *D);
