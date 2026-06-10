@@ -195,6 +195,37 @@ public:
             emitToken(E->getMemberLoc(), ND);
         return true;
     }
+
+    // Type references: base-class specifiers, variable/parameter/return type
+    // annotations, and template-parameter uses.  Without this, written type
+    // names (e.g. `Shape` in `: Shape`, `Circle` in `geo::Circle c`, `T` in the
+    // clamp signature) get no token at all.  Builtin types (int/double) have no
+    // decl and are skipped, matching clangd.
+    bool VisitTypeLoc(TypeLoc TL) {
+        const NamedDecl *D = nullptr;
+        SourceLocation   loc;
+        if (auto T = TL.getAs<RecordTypeLoc>())                  { D = T.getDecl();            loc = T.getNameLoc(); }
+        else if (auto T = TL.getAs<EnumTypeLoc>())               { D = T.getDecl();            loc = T.getNameLoc(); }
+        else if (auto T = TL.getAs<TypedefTypeLoc>())            { D = T.getTypePtr()->getDecl(); loc = T.getNameLoc(); }
+        else if (auto T = TL.getAs<TemplateTypeParmTypeLoc>())   { D = T.getDecl();            loc = T.getNameLoc(); }
+        else if (auto T = TL.getAs<InjectedClassNameTypeLoc>())  { D = T.getDecl();            loc = T.getNameLoc(); }
+        if (D && loc.isValid()) emitToken(loc, D);
+        return true;
+    }
+
+    // Member references in a constructor's initializer list (`: radius(r)`),
+    // which clangd highlights as properties.  Also emit the constructor's own
+    // name (which is the class name, so VisitNamedDecl skips it) as a class token.
+    bool VisitCXXConstructorDecl(CXXConstructorDecl *D) {
+        if (!D->isImplicit() && D->getParent())
+            emitToken(D->getLocation(), D->getParent());
+        for (const CXXCtorInitializer *I : D->inits()) {
+            if (I->isMemberInitializer() && I->isWritten())
+                if (FieldDecl *F = I->getMember())
+                    emitToken(I->getMemberLocation(), F);
+        }
+        return true;
+    }
 };
 
 CB_SemanticTokenList *cb_semantic_tokens(CB_TransUnit *tu) {
@@ -237,6 +268,25 @@ CB_SemanticTokenList *cb_semantic_tokens(CB_TransUnit *tu) {
         t.line       = p.getLine();
         t.col        = p.getColumn();
         t.length     = (uint32_t)spelling.size();
+        t.token_type = CB_TOK_MACRO;
+        list->tokens.push_back(t);
+    }
+
+    // Macro *definition* names (`#define MAX_ITEMS`).  The loop above only marks
+    // use sites; clangd also tokenizes the name at each #define in this file.
+    Preprocessor &PP = tu->ast->getPreprocessor();
+    for (const auto &m : PP.macros()) {
+        const IdentifierInfo *II = m.first;
+        const MacroInfo *MI = PP.getMacroInfo(const_cast<IdentifierInfo *>(II));
+        if (!MI) continue;
+        SourceLocation sp = SM.getSpellingLoc(MI->getDefinitionLoc());
+        if (sp.isInvalid() || SM.getFileID(sp) != SM.getMainFileID()) continue;
+        auto p = SM.getPresumedLoc(sp);
+        if (!p.isValid()) continue;
+        SemanticTokenEntry t;
+        t.line       = p.getLine();
+        t.col        = p.getColumn();
+        t.length     = (uint32_t)II->getLength();
         t.token_type = CB_TOK_MACRO;
         list->tokens.push_back(t);
     }

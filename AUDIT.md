@@ -414,6 +414,34 @@ tokens, document symbols, folding) returned **nothing** — fatal for an LSP ser
 that reuses one TU across requests.  Fixed by running completion on a fresh
 `SourceManager` (reusing the FileManager + diagnostics) exactly as libclang does.
 
+### B-24 — `semantic_tokens` skipped all type references (and several decls)
+
+**File:** `bridge/cb/analysis.cpp` (`SemanticTokenVisitor`, `cb_semantic_tokens`)
+
+A position-level diff against clangd (matching token positions, ignoring the
+operator/bracket/modifier/comment types the bridge doesn't model) showed 18
+identifier tokens clangd emits that the bridge did not — and **zero** spurious
+extras.  The bridge visited declarations and expression references but never
+*type references*, so written type names got no highlighting at all.  Added:
+
+- `VisitTypeLoc` — record / enum / typedef / template-type-parameter /
+  injected-class-name references (base-class specifiers like `: Shape`, variable
+  and parameter type annotations like `geo::Circle c`, template-parameter uses
+  like the `T`s in `clamp`).  Builtin types (int/double) have no decl and are
+  skipped, exactly as clangd does.
+- `VisitCXXConstructorDecl` — the constructor's own name (which equals the class
+  name, so the generic decl path skipped it) and the member references in its
+  initializer list (`: radius(r)`).
+- macro **definition** names (`#define MAX_ITEMS`) via `Preprocessor::macros()`;
+  the existing loop only marked macro use sites.
+
+Net: **18 missing → 3, 0 spurious extras.**  The 3 remaining are cosmetic and
+left as accepted gaps: the two `auto` placeholders (clangd colours `auto` as a
+deduced type; the bridge's token model is named-entity based and leaves keywords
+uncoloured) and the `geo::` namespace qualifier of `geo::Circle` (clang 22's
+removal of `ElaboratedType` changed qualifier traversal so the written
+nested-name-specifier loc is no longer visited in this type position).
+
 ## Round-2 functions verified correct (no fix needed)
 
 `format` (spacing edits, style-dir), type hierarchy (direct-only super/subtypes),

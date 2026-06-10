@@ -294,6 +294,31 @@ fn signature_help_does_not_corrupt_translation_unit() {
     assert_eq!(hl_after, hl_before, "highlight broke after signature_help");
 }
 
+/// Semantic tokens must cover *type references*, not just declarations and
+/// expression references: base-class specifiers, variable type annotations,
+/// template-parameter uses, and constructor-initializer members.  clangd emits
+/// all of these; the bridge used to emit none.  Regression for the TypeLoc gap.
+#[test]
+fn semantic_tokens_cover_type_references() {
+    let f = load();
+    let toks = semtok::semantic_tokens(&f.tu);
+    let kind_at = |line: u32, col: u32| -> Option<u8> {
+        toks.iter().find(|t| t.line == line && t.col == col).map(|t| t.token_type)
+    };
+    let check = |anchor: &str, token: &str, want: u8, what: &str| {
+        let (l, c) = at(&f.src, anchor, token);
+        assert_eq!(kind_at(l, c), Some(want), "{what} at {l}:{c}");
+    };
+    // base-class reference `Shape` in `struct Circle : Shape`
+    check("struct Circle : Shape", "Shape", tok_type::TYPE, "base-class ref");
+    // variable type `Circle` in `geo::Circle circle(2.0)`
+    check("geo::Circle circle", "Circle", tok_type::TYPE, "variable type ref");
+    // template-parameter use `T` in the clamp signature
+    check("T clamp(T value", "T", tok_type::TYPE, "template-param use");
+    // constructor-initializer member `radius` in `: radius(r)`
+    check("explicit Circle(double r) : radius(r)", "radius", tok_type::PROPERTY, "ctor-init member");
+}
+
 // ── document symbols: header isolation + range end ───────────────────────────
 
 /// documentSymbol is per-document: a symbol defined in an included header
