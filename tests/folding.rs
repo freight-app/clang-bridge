@@ -100,3 +100,40 @@ fn folding_ranges_sorted() {
         "folding ranges are not sorted by start_line: {lines:?}"
     );
 }
+
+/// Multi-line comment blocks fold with kind "comment" (clangd folds the file
+/// header and multi-line doc comments).  Regression for missing comment folding.
+#[test]
+fn folding_comment_block() {
+    let src = "/* a multi-line\n   block comment\n   spanning lines */\nint x;\n";
+    let path = write_temp("cb_folding_comment.cpp", src);
+    let idx = Index::new();
+    let tu = idx.parse(path.to_str().unwrap(), "", &["-std=c++17"]).unwrap();
+
+    let ranges = folding::folding_ranges(&tu);
+    let comment = ranges.iter().find(|r| r.kind == "comment" && r.start_line == 1);
+    assert!(
+        comment.is_some(),
+        "expected a 'comment' fold for the 3-line block comment, got: {:?}",
+        ranges.iter().map(|r| (r.start_line, r.end_line, r.kind.clone())).collect::<Vec<_>>()
+    );
+}
+
+/// A braced loop body folds as its own "region", distinct from the enclosing
+/// function body.  Regression for missing statement-level folding.
+#[test]
+fn folding_loop_body() {
+    let src = "int f(int n) {\n    int t = 0;\n    for (int i = 0; i < n; ++i) {\n        t += i;\n        t += 1;\n    }\n    return t;\n}\n";
+    let path = write_temp("cb_folding_loop.cpp", src);
+    let idx = Index::new();
+    let tu = idx.parse(path.to_str().unwrap(), "", &["-std=c++17"]).unwrap();
+
+    let ranges = folding::folding_ranges(&tu);
+    // The for-loop opens on line 3 and closes on line 6.
+    let loop_fold = ranges.iter().find(|r| r.start_line == 3 && r.end_line == 6 && r.kind == "region");
+    assert!(
+        loop_fold.is_some(),
+        "expected a 'region' fold for the for-loop body (3-6), got: {:?}",
+        ranges.iter().map(|r| (r.start_line, r.end_line, r.kind.clone())).collect::<Vec<_>>()
+    );
+}

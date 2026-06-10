@@ -136,6 +136,11 @@ public:
 
     bool skip(const NamedDecl *ND) const {
         if (SM.isInSystemHeader(ND->getLocation())) return true;
+        // documentSymbol is per-document: only symbols written in the main file
+        // belong in the outline.  Without this, an included header's decls (e.g.
+        // shapes.h's `square`) leak into the outline; clangd excludes them.
+        if (SM.getFileID(SM.getExpansionLoc(ND->getLocation())) != SM.getMainFileID())
+            return true;
         // Constructors, destructors, operators and conversions have
         // non-identifier names but belong in the outline; add() uses
         // getNameAsString() (safe) to render them as "S" / "~S" / "operator=".
@@ -156,7 +161,13 @@ public:
         if (auto p = SM.getPresumedLoc(sr.getBegin()); p.isValid()) {
             e.range_start_line = p.getLine(); e.range_start_col = p.getColumn();
         }
-        if (auto p = SM.getPresumedLoc(sr.getEnd()); p.isValid()) {
+        // LSP ranges are half-open: the end points one-past the last token.
+        // sr.getEnd() is the *start* of the last token, so advance to its end
+        // (clangd uses getLocForEndOfToken here).
+        SourceLocation endTok =
+            Lexer::getLocForEndOfToken(sr.getEnd(), 0, SM, Ctx.getLangOpts());
+        if (endTok.isInvalid()) endTok = sr.getEnd();
+        if (auto p = SM.getPresumedLoc(endTok); p.isValid()) {
             e.range_end_line = p.getLine(); e.range_end_col = p.getColumn();
         }
         if (auto p = SM.getPresumedLoc(ND->getLocation()); p.isValid()) {

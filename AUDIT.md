@@ -358,6 +358,62 @@ macro and return its `#define` location (`MacroInfo::getDefinitionLoc`).
 A paragraph's per-line `TextComment` children were concatenated with no
 separator ("Brief line.More detail here."). Join them with a single space.
 
+## Round 3 — clangd-oracle differential audit (B-18 … B-23)
+
+Drove clangd 22 (same LLVM as the bridge links) over JSON-RPC against
+`tests/fixtures/test.cpp` and diffed every method's output against the bridge.
+
+### B-18 — inlay param hint for a macro arg anchored inside the macro body
+
+**File:** `bridge/cb/inlay.cpp`
+
+`clamp(answer, 0, MAX_ITEMS)`'s `hi:` hint landed on the `#define MAX_ITEMS 128`
+line (the macro body) instead of the `MAX_ITEMS` call-site token.  `getSpellingLoc`
+on a macro-arg token resolves into the macro definition; switched the hint
+positions (and the viewport check) to `getFileLoc`, which clangd uses.
+
+### B-19 — `document_symbols` leaked included-header symbols
+
+**File:** `bridge/cb/doc.cpp` (`DocSymVisitor::skip`)
+
+`square` (defined in shapes.h) appeared in test.cpp's outline.  documentSymbol is
+per-document; added a main-file guard. clangd is main-file only.
+
+### B-20 — `document_symbols` range end was one short (not half-open)
+
+**File:** `bridge/cb/doc.cpp` (`add`)
+
+`sr.getEnd()` is the *start* of the last token, so ranges ended one column early
+(field `x`: 21:9 vs clangd's 21:10).  Advance with `Lexer::getLocForEndOfToken`.
+
+### B-21 — `semantic_tokens` leaked included-header tokens
+
+**File:** `bridge/cb/analysis.cpp` (`SemanticTokenVisitor::emitToken`)
+
+shapes.h's `square`/params surfaced as tokens at the header's line numbers (8–9),
+which the client misapplies to the open document.  Added a main-file guard.
+
+### B-22 — `folding_ranges` missing comment blocks and statement bodies
+
+**File:** `bridge/cb/analysis.cpp` (`FoldingVisitor`, `cb_folding_ranges`)
+
+Bridge folded only decl/brace bodies (14 ranges vs clangd's 17).  Added a
+`VisitCompoundStmt` for braced statement bodies (for/while/if; deduped against
+function bodies) and a raw-lexer comment scan that merges runs of whole-line
+comments and multi-line block comments (skipping trailing `///<`-style comments
+after code, which clangd does not fold).  Now matches clangd's 17 exactly.
+
+### B-23 — code completion / signature help corrupted the TranslationUnit
+
+**File:** `bridge/cb/completion.cpp` (`cb_complete`, `cb_signature_help`)
+
+`ASTUnit::CodeComplete` was handed the unit's *own* SourceManager/FileManager, so
+the completion re-parse clobbered the cached AST's source state.  After one
+`signature_help` call, every AST-visitor query (inlay, highlight, semantic
+tokens, document symbols, folding) returned **nothing** — fatal for an LSP server
+that reuses one TU across requests.  Fixed by running completion on a fresh
+`SourceManager` (reusing the FileManager + diagnostics) exactly as libclang does.
+
 ## Round-2 functions verified correct (no fix needed)
 
 `format` (spacing edits, style-dir), type hierarchy (direct-only super/subtypes),

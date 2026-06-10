@@ -12,7 +12,7 @@
 //! definition lines) are derived independently from reading the fixture.
 
 use clang_bridge::{
-    callhier, diag::Severity, goto, hover, inlay, refs, rename, semtok,
+    callhier, diag::Severity, goto, highlight, hover, inlay, refs, rename, semtok,
     semtok::tok_type, sighelp, typehier, Index, TranslationUnit,
 };
 use std::path::Path;
@@ -250,6 +250,81 @@ fn inlay_hints_param_names_and_deduced_types() {
     assert!(has_type, "expected a `: int` type hint for answer; got {hints:?}");
 }
 
+/// A macro-expanded argument's param hint must anchor at the call-site spelling,
+/// not inside the macro body.  `clamp(answer, 0, MAX_ITEMS)` passes `MAX_ITEMS`
+/// as `hi`; clangd places `hi:` on the `MAX_ITEMS` token (the call line), not on
+/// the `#define MAX_ITEMS 128` line.  Regression for the getSpellingLoc bug.
+#[test]
+fn inlay_hint_macro_arg_anchors_at_call_site() {
+    let f = load();
+    let hints: Vec<_> = inlay::inlay_hints(&f.tu, 1, 10_000).iter().collect();
+
+    let call_line = line_of(&f.src, "int capped = clamp(answer, 0, MAX_ITEMS);");
+    let define_line = line_of(&f.src, "#define MAX_ITEMS 128");
+
+    let hi: Vec<_> = hints.iter().filter(|h| h.label == "hi:").collect();
+    assert_eq!(hi.len(), 1, "exactly one `hi:` hint expected; got {hints:?}");
+    assert_eq!(hi[0].line, call_line, "`hi:` must anchor on the clamp() call line");
+    assert!(
+        hi.iter().all(|h| h.line != define_line),
+        "`hi:` must not land inside the macro definition (line {define_line})"
+    );
+}
+
+/// Code completion (signature help) must not corrupt the TU.  An LSP server
+/// reuses one TranslationUnit across many requests; running `signature_help`
+/// (or completion) used to hand `CodeComplete` the unit's own SourceManager,
+/// clobbering the cached AST so every later AST-visitor query returned nothing.
+/// Regression: AST-backed queries must still work after signature help.
+#[test]
+fn signature_help_does_not_corrupt_translation_unit() {
+    let f = load();
+
+    let inlay_before = inlay::inlay_hints(&f.tu, 1, 10_000).len();
+    let hl_before = highlight::highlight(&f.tu, 89, 9).len();
+    assert!(inlay_before > 0 && hl_before > 0, "sanity: queries work before");
+
+    let (sl, sc) = at(&f.src, "auto answer = add(40, 2);", "40");
+    let sh = sighelp::signature_help(&f.tu, sl, sc).expect("signature help at add(40,2)");
+    assert!(!sh.overloads.is_empty(), "expected overloads");
+
+    let inlay_after = inlay::inlay_hints(&f.tu, 1, 10_000).len();
+    let hl_after = highlight::highlight(&f.tu, 89, 9).len();
+    assert_eq!(inlay_after, inlay_before, "inlay broke after signature_help");
+    assert_eq!(hl_after, hl_before, "highlight broke after signature_help");
+}
+
+// ── document symbols: header isolation + range end ───────────────────────────
+
+/// documentSymbol is per-document: a symbol defined in an included header
+/// (`square` in shapes.h) must not appear in the outline.  Matches clangd.
+#[test]
+fn document_symbols_exclude_included_header() {
+    let f = load();
+    let syms: Vec<_> = f.tu.document_symbols().expect("document symbols").iter().collect();
+    assert!(
+        syms.iter().all(|s| s.name != "square"),
+        "square is defined in shapes.h and must not appear in test.cpp's outline; got {:?}",
+        syms.iter().map(|s| s.name.clone()).collect::<Vec<_>>()
+    );
+}
+
+/// LSP ranges are half-open: a symbol's range end points one past the last
+/// token.  For field `x` (declared `int x;`), the end column must be one past
+/// the `x` name token, matching clangd's getLocForEndOfToken behaviour.
+#[test]
+fn document_symbols_range_end_is_end_of_token() {
+    let f = load();
+    let syms: Vec<_> = f.tu.document_symbols().expect("document symbols").iter().collect();
+    let x = syms.iter().find(|s| s.name == "x" && s.kind == "field").expect("field x");
+    let (name_line, name_col) = at(&f.src, "int x;", "x");
+    assert_eq!(x.range_end_line, name_line, "x range end line");
+    assert_eq!(
+        x.range_end_col, name_col + 1,
+        "x range end col should point one past the `x` token (col {name_col})"
+    );
+}
+
 // ── semantic tokens ──────────────────────────────────────────────────────────
 
 #[test]
@@ -259,6 +334,16 @@ fn semantic_tokens_classify_each_kind() {
     let kind_at = |line: u32, col: u32| -> Option<u8> {
         toks.iter().find(|t| t.line == line && t.col == col).map(|t| t.token_type)
     };
+
+    // semanticTokens is per-document: no token may come from an included header.
+    // shapes.h's symbols sit at its own low line numbers (≤10); the first token
+    // in test.cpp is the `MAX_ITEMS` macro.  Regression for the header leak.
+    let first_real = line_of(&f.src, "#define MAX_ITEMS 128");
+    assert!(
+        toks.iter().all(|t| t.line >= first_real),
+        "semantic tokens leaked from an included header (token before line {first_real}): {:?}",
+        toks.iter().filter(|t| t.line < first_real).map(|t| (t.line, t.col)).collect::<Vec<_>>()
+    );
 
     let check = |anchor: &str, token: &str, want: u8, what: &str| {
         let (l, c) = at(&f.src, anchor, token);

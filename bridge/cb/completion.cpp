@@ -122,6 +122,13 @@ CB_CompletionIter *cb_complete(CB_TransUnit *tu,
 
     LangOptions lang_opts = tu->ast->getASTContext().getLangOpts();
 
+    // Fresh SourceManager so completion doesn't clobber the cached AST — see the
+    // detailed note in cb_signature_help.
+    auto diags   = tu->ast->getDiagnosticsPtr();
+    auto fileMgr = tu->ast->getFileManagerPtr();
+    llvm::IntrusiveRefCntPtr<SourceManager> sourceMgr(
+        new SourceManager(*diags, *fileMgr, /*UserFilesAreVolatile=*/true));
+
     tu->ast->CodeComplete(
         main_file.str(), line, col,
         remapped,
@@ -130,10 +137,10 @@ CB_CompletionIter *cb_complete(CB_TransUnit *tu,
         /*IncludeBriefComments=*/true,
         *consumer,
         std::make_shared<PCHContainerOperations>(),
-        tu->ast->getDiagnosticsPtr(),
+        diags,
         lang_opts,
-        tu->ast->getSourceManagerPtr(),
-        tu->ast->getFileManagerPtr(),
+        sourceMgr,
+        fileMgr,
         stored_diags,
         owned_buffers,
         /*Act=*/nullptr
@@ -235,6 +242,16 @@ CB_SigHelp *cb_signature_help(CB_TransUnit *tu, uint32_t line, uint32_t col) {
     SmallVector<const llvm::MemoryBuffer *, 4> owned_buffers;
     LangOptions lang_opts = tu->ast->getASTContext().getLangOpts();
 
+    // Run completion on a FRESH SourceManager (reusing the unit's FileManager and
+    // diagnostics), exactly as libclang does.  Handing CodeComplete the unit's
+    // own SourceManager makes the completion re-parse clobber the cached AST's
+    // source state, so every later AST-visitor query (inlay/highlight/semtok/…)
+    // would then return nothing.  A separate SM isolates the completion parse.
+    auto diags   = tu->ast->getDiagnosticsPtr();
+    auto fileMgr = tu->ast->getFileManagerPtr();
+    llvm::IntrusiveRefCntPtr<SourceManager> sourceMgr(
+        new SourceManager(*diags, *fileMgr, /*UserFilesAreVolatile=*/true));
+
     tu->ast->CodeComplete(
         main_file.str(), line, col,
         /*RemappedFiles=*/{},
@@ -243,10 +260,10 @@ CB_SigHelp *cb_signature_help(CB_TransUnit *tu, uint32_t line, uint32_t col) {
         /*IncludeBriefComments=*/false,
         *consumer,
         std::make_shared<PCHContainerOperations>(),
-        tu->ast->getDiagnosticsPtr(),
+        diags,
         lang_opts,
-        tu->ast->getSourceManagerPtr(),
-        tu->ast->getFileManagerPtr(),
+        sourceMgr,
+        fileMgr,
         stored_diags,
         owned_buffers,
         /*Act=*/nullptr

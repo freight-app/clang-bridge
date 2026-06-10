@@ -157,6 +157,11 @@ public:
     void emitToken(SourceLocation loc, const NamedDecl *D) {
         loc = SM.getSpellingLoc(loc);
         if (SM.isInSystemHeader(loc)) return;
+        // semanticTokens is per-document: only tokens in the main file belong in
+        // the stream.  Without this, decls/refs from an included header (e.g.
+        // shapes.h's `square`) leak in at that header's line numbers, which the
+        // client then misapplies to the open document.  clangd is main-file only.
+        if (SM.getFileID(loc) != SM.getMainFileID()) return;
         auto p = SM.getPresumedLoc(loc);
         if (!p.isValid()) return;
 
@@ -370,6 +375,13 @@ public:
         addRange(SourceRange(D->getBeginLoc(), D->getRBraceLoc()), "region");
         return true;
     }
+    // Braced statement bodies (for/while/if/switch and bare blocks).  Function
+    // bodies are CompoundStmts too, so this also covers them; duplicates of the
+    // VisitFunctionDecl range are removed in cb_folding_ranges.
+    bool VisitCompoundStmt(CompoundStmt *S) {
+        addRange(S->getSourceRange(), "region");
+        return true;
+    }
 };
 
 CB_FoldingRangeList *cb_folding_ranges(CB_TransUnit *tu) {
@@ -381,9 +393,61 @@ CB_FoldingRangeList *cb_folding_ranges(CB_TransUnit *tu) {
     FoldingVisitor vis(SM, main_fid, list->entries);
     vis.TraverseDecl(Ctx.getTranslationUnitDecl());
 
+    // Multi-line comment blocks fold as kind "comment" (clangd folds the file
+    // header and multi-line doc comments).  Adjacent line comments are merged
+    // into a single RawComment by clang, so each block has one span.
+    // Comment folds: lex the main file in raw mode (the AST's RawCommentList only
+    // keeps *doc* comments, so it misses the file header and plain // blocks that
+    // clangd folds).  Merge runs of whole-line comments on consecutive lines and
+    // multi-line block comments; skip trailing comments that sit after code
+    // (e.g. `int x; ///< ...`), which clangd does not fold.
+    {
+        llvm::MemoryBufferRef MB = SM.getBufferOrFake(main_fid);
+        llvm::StringRef buf = MB.getBuffer();
+        Lexer lex(main_fid, MB, SM, Ctx.getLangOpts());
+        lex.SetCommentRetentionState(true);
+        int curStart = -1, curEnd = -1;
+        auto flush = [&]() {
+            if (curStart >= 0 && curEnd > curStart)
+                list->entries.push_back(
+                    {(uint32_t)curStart, (uint32_t)curEnd, "comment"});
+            curStart = curEnd = -1;
+        };
+        Token tok;
+        for (lex.LexFromRawLexer(tok); tok.isNot(tok::eof);
+             lex.LexFromRawLexer(tok)) {
+            if (tok.isNot(tok::comment)) continue;
+            auto [fid, off] = SM.getDecomposedLoc(tok.getLocation());
+            auto pb = SM.getPresumedLoc(tok.getLocation());
+            auto pe = SM.getPresumedLoc(tok.getEndLoc());
+            if (!pb.isValid() || !pe.isValid()) continue;
+            // Whole-line comment? only whitespace precedes it on its line.
+            unsigned ls = off;
+            while (ls > 0 && buf[ls - 1] != '\n') --ls;
+            bool leading = true;
+            for (unsigned i = ls; i < off; ++i)
+                if (buf[i] != ' ' && buf[i] != '\t') { leading = false; break; }
+            if (!leading) { flush(); continue; }
+            int s = (int)pb.getLine(), e = (int)pe.getLine();
+            if (curStart >= 0 && s <= curEnd + 1)
+                curEnd = std::max(curEnd, e);
+            else { flush(); curStart = s; curEnd = e; }
+        }
+        flush();
+    }
+
     std::sort(list->entries.begin(), list->entries.end(),
               [](const FoldingEntry &a, const FoldingEntry &b) {
-                  return a.start_line < b.start_line; });
+                  if (a.start_line != b.start_line) return a.start_line < b.start_line;
+                  return a.end_line < b.end_line; });
+    // Drop duplicate ranges (a function body added by both VisitFunctionDecl and
+    // VisitCompoundStmt collapses to one entry).
+    list->entries.erase(
+        std::unique(list->entries.begin(), list->entries.end(),
+                    [](const FoldingEntry &a, const FoldingEntry &b) {
+                        return a.start_line == b.start_line &&
+                               a.end_line == b.end_line; }),
+        list->entries.end());
     return list;
 }
 

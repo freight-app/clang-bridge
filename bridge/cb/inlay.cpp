@@ -102,7 +102,10 @@ public:
     }
 
     bool inViewport(SourceLocation loc) const {
-        loc = SM.getSpellingLoc(loc);
+        // getFileLoc (not getSpellingLoc): for a macro-expanded argument we want
+        // the location where the macro is *used* in the call, not where the macro
+        // body text lives (e.g. MAX_ITEMS → the call site, not the #define).
+        loc = SM.getFileLoc(loc);
         // Only emit hints for tokens that live in the main translation unit file.
         // Without this guard, hints from included headers (e.g. vec2.h) whose
         // line numbers happen to fall within [start_line, end_line] leak through.
@@ -154,7 +157,7 @@ public:
             // Suppress when a `/* paramName */` comment precedes the argument.
             if (isPrecededByParamNameComment(arg, pname)) continue;
 
-            auto p = SM.getPresumedLoc(SM.getSpellingLoc(arg->getBeginLoc()));
+            auto p = SM.getPresumedLoc(SM.getFileLoc(arg->getBeginLoc()));
             if (!p.isValid()) continue;
             InlayHintEntry h;
             h.line  = p.getLine();
@@ -188,7 +191,7 @@ public:
             if (getSpelledIdentifier(arg) == pname) continue;
             if (isPrecededByParamNameComment(arg, pname)) continue;
 
-            auto p = SM.getPresumedLoc(SM.getSpellingLoc(arg->getBeginLoc()));
+            auto p = SM.getPresumedLoc(SM.getFileLoc(arg->getBeginLoc()));
             if (!p.isValid()) continue;
             InlayHintEntry h;
             h.line  = p.getLine();
@@ -218,7 +221,7 @@ public:
             for (unsigned i = 0; i < nInits; ++i) {
                 const Expr *init = ILE->getInit(i);
                 if (isa<DesignatedInitExpr>(init)) continue;
-                SourceLocation loc = SM.getSpellingLoc(init->getBeginLoc());
+                SourceLocation loc = SM.getFileLoc(init->getBeginLoc());
                 if (!inViewport(loc)) continue;
                 auto p = SM.getPresumedLoc(loc);
                 if (!p.isValid()) continue;
@@ -259,7 +262,7 @@ public:
                 ++field_it; continue;
             }
 
-            SourceLocation loc = SM.getSpellingLoc(init->getBeginLoc());
+            SourceLocation loc = SM.getFileLoc(init->getBeginLoc());
             if (!inViewport(loc)) { ++field_it; continue; }
             auto p = SM.getPresumedLoc(loc);
             if (!p.isValid()) { ++field_it; continue; }
