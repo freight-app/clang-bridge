@@ -205,6 +205,50 @@ public:
         return true;
     }
 
+    // Plain C structs/unions are RecordDecls, not CXXRecordDecls, so they never
+    // reach TraverseCXXRecordDecl — without this their fields would float up to
+    // the top level (parent = -1) and the struct itself would be missing from
+    // the outline.  CXXRecordDecl dispatches to the override above, so this only
+    // fires for C records.
+    bool TraverseRecordDecl(RecordDecl *D) {
+        if (skip(D)) return true;
+        if (!D->isThisDeclarationADefinition()) return true;
+        int32_t idx = add(D);
+        parent_stack.push_back(idx);
+        Base::TraverseRecordDecl(D);
+        parent_stack.pop_back();
+        return true;
+    }
+
+    // Explicit class-template specialisations (full and partial) are routed to
+    // their own Traverse methods, not TraverseCXXRecordDecl, so without these
+    // their members orphan to the top level just like C records did.
+    bool TraverseClassTemplateSpecializationDecl(ClassTemplateSpecializationDecl *D) {
+        if (skip(D)) return true;
+        if (!D->isThisDeclarationADefinition()) return true;
+        int32_t idx = add(D);
+        parent_stack.push_back(idx);
+        Base::TraverseClassTemplateSpecializationDecl(D);
+        parent_stack.pop_back();
+        return true;
+    }
+    bool TraverseClassTemplatePartialSpecializationDecl(
+            ClassTemplatePartialSpecializationDecl *D) {
+        if (skip(D)) return true;
+        if (!D->isThisDeclarationADefinition()) return true;
+        int32_t idx = add(D);
+        parent_stack.push_back(idx);
+        Base::TraverseClassTemplatePartialSpecializationDecl(D);
+        parent_stack.pop_back();
+        return true;
+    }
+
+    // C++20 concepts (`concept Addable = ...`) are ConceptDecls; index them.
+    bool VisitConceptDecl(ConceptDecl *D) {
+        if (!skip(D)) add(D);
+        return true;
+    }
+
     bool TraverseEnumDecl(EnumDecl *D) {
         if (skip(D)) return true;
         int32_t idx = add(D);

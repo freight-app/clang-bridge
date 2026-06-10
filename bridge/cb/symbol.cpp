@@ -17,23 +17,30 @@ class RefLocator : public RecursiveASTVisitor<RefLocator> {
 public:
     const SourceManager &SM;
     uint32_t target_line, target_col;
+    StringRef cursor_ident;   // the identifier actually written under the cursor
     const NamedDecl *found = nullptr;
 
-    RefLocator(const SourceManager &SM, uint32_t l, uint32_t c)
-        : SM(SM), target_line(l), target_col(c) {}
+    RefLocator(const SourceManager &SM, uint32_t l, uint32_t c, StringRef ident)
+        : SM(SM), target_line(l), target_col(c), cursor_ident(ident) {}
 
     bool shouldVisitTemplateInstantiations() const { return false; }
 
-    // Returns true when (target_line, target_col) lands inside the token at
-    // tokenLoc of the given length.
-    bool inToken(SourceLocation tokenLoc, size_t nameLen) const {
-        if (nameLen == 0) return false;
+    // Returns true when (target_line, target_col) lands inside the `name` token
+    // at tokenLoc *and* `name` equals the identifier physically written under the
+    // cursor.  The name check is essential: clang synthesises nodes at a concept-
+    // constrained call site (std::size_t, __builtin_addressof, …) whose reported
+    // location is the call site but which name a different entity; matching by
+    // the cursor's literal identifier rejects those so the cursor resolves to the
+    // real symbol.  (getPresumedLoc and getDecomposedLoc disagree for such nodes,
+    // so checking source text at the node's own location is not reliable.)
+    bool inToken(SourceLocation tokenLoc, StringRef name) const {
+        if (name.empty() || name != cursor_ident) return false;
         auto ploc = SM.getPresumedLoc(SM.getSpellingLoc(tokenLoc));
         if (!ploc.isValid()) return false;
         uint32_t startCol = (uint32_t)ploc.getColumn();
         return (uint32_t)ploc.getLine() == target_line &&
                target_col >= startCol &&
-               target_col < startCol + (uint32_t)nameLen;
+               target_col < startCol + (uint32_t)name.size();
     }
 
     bool VisitDeclRefExpr(DeclRefExpr *E) {
@@ -42,7 +49,13 @@ public:
             // Follow using-shadow decls to the real target (HV-2).
             if (auto *USD = dyn_cast<UsingShadowDecl>(D))
                 D = USD->getTargetDecl();
-            if (inToken(E->getLocation(), safeDeclName(D).size()))
+            // Skip references to compiler builtins (e.g. __builtin_addressof),
+            // which clang synthesises at user source locations — notably at a
+            // concept-constrained call site — and which would otherwise shadow
+            // the real symbol under the cursor.
+            if (auto *FD = dyn_cast<FunctionDecl>(D))
+                if (FD->getBuiltinID() != 0) return true;
+            if (inToken(E->getLocation(), safeDeclName(D)))
                 found = D;
         }
         return true;
@@ -51,16 +64,32 @@ public:
     bool VisitMemberExpr(MemberExpr *E) {
         if (!found) {
             const NamedDecl *D = E->getMemberDecl();
-            if (inToken(E->getMemberLoc(), safeDeclName(D).size()))
+            if (inToken(E->getMemberLoc(), safeDeclName(D)))
                 found = D;
         }
+        return true;
+    }
+
+    // A direct (non-member) call: resolve the cursor on the callee token to the
+    // callee itself.  CallExpr is visited in pre-order, before the nodes clang
+    // synthesises at a concept-constrained call site (std::size_t, addressof,
+    // …), so matching here wins over those and yields the real function.
+    bool VisitCallExpr(CallExpr *E) {
+        if (found) return true;
+        const FunctionDecl *FD = E->getDirectCallee();
+        if (!FD) return true;
+        if (FD->getBuiltinID() != 0) return true;   // skip synthesised builtin calls
+        const Expr *callee = E->getCallee() ? E->getCallee()->IgnoreImplicit() : nullptr;
+        if (auto *DRE = dyn_cast_or_null<DeclRefExpr>(callee))
+            if (inToken(DRE->getLocation(), safeDeclName(FD)))
+                found = FD;
         return true;
     }
 
     bool VisitTagTypeLoc(TagTypeLoc TL) {
         if (!found) {
             const TagDecl *D = TL.getDecl();
-            if (!D->getName().empty() && inToken(TL.getNameLoc(), D->getName().size()))
+            if (!D->getName().empty() && inToken(TL.getNameLoc(), D->getName()))
                 found = D;
         }
         return true;
@@ -69,7 +98,7 @@ public:
     bool VisitTypedefTypeLoc(TypedefTypeLoc TL) {
         if (!found) {
             const TypedefNameDecl *D = TL.getTypePtr()->getDecl();
-            if (inToken(TL.getNameLoc(), D->getName().size()))
+            if (inToken(TL.getNameLoc(), D->getName()))
                 found = D;
         }
         return true;
@@ -79,7 +108,7 @@ public:
         if (!found) {
             TemplateName TN = TL.getTypePtr()->getTemplateName();
             if (TemplateDecl *TD = TN.getAsTemplateDecl()) {
-                if (inToken(TL.getTemplateNameLoc(), TD->getName().size()))
+                if (inToken(TL.getTemplateNameLoc(), TD->getName()))
                     found = TD;
             }
         }
@@ -100,7 +129,7 @@ public:
             if (!ctor) return true;
             StringRef className = ctor->getParent()->getName();
             if (!className.empty() && E->getLocation().isValid() &&
-                inToken(E->getLocation(), className.size()))
+                inToken(E->getLocation(), className))
                 found = ctor;
         }
         return true;
@@ -157,7 +186,11 @@ const NamedDecl *locate_symbol_at(ASTUnit *ast, uint32_t line, uint32_t col) {
 
     // Clangd pattern: only proceed when the cursor is on an identifier token.
     // Hovering on punctuation (::, (, *, etc.) should return nothing rather
-    // than a garbage result from the DeclLocator fallback.
+    // than a garbage result from the DeclLocator fallback.  Also capture the
+    // exact identifier written under the cursor so RefLocator can reject AST
+    // nodes whose reported location coincides with the cursor but which name a
+    // different entity (synthesised constraint nodes at a concept call site).
+    StringRef cursor_ident;
     {
         SourceLocation loc = SM.translateLineCol(SM.getMainFileID(), line, col);
         if (loc.isValid()) {
@@ -170,10 +203,25 @@ const NamedDecl *locate_symbol_at(ASTUnit *ast, uint32_t line, uint32_t col) {
                     tok.getKind() != tok::kw_operator)
                     return nullptr;
             }
+            // Expand over identifier characters around the cursor to get the
+            // whole identifier (translateLineCol may land mid-token).
+            auto [fid, off] = SM.getDecomposedLoc(loc);
+            bool invalid = false;
+            StringRef buf = SM.getBufferData(fid, &invalid);
+            if (!invalid && off <= buf.size()) {
+                auto isIdent = [](char c) {
+                    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                           (c >= '0' && c <= '9') || c == '_';
+                };
+                size_t b = off, e = off;
+                while (b > 0 && isIdent(buf[b - 1])) --b;
+                while (e < buf.size() && isIdent(buf[e])) ++e;
+                cursor_ident = buf.substr(b, e - b);
+            }
         }
     }
 
-    RefLocator refV(SM, line, col);
+    RefLocator refV(SM, line, col, cursor_ident);
     refV.TraverseDecl(Ctx.getTranslationUnitDecl());
     if (refV.found) return refV.found;
 

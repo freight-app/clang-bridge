@@ -184,6 +184,7 @@ std::string declKind(const NamedDecl *D) {
     if (isa<EnumDecl>(D))              return "enum";
     if (isa<EnumConstantDecl>(D))      return "enumconst";
     if (isa<TypedefNameDecl>(D))       return "typedef";
+    if (isa<ConceptDecl>(D))           return "concept";
     if (isa<VarDecl>(D))               return "var";
     if (isa<NamespaceDecl>(D))         return "namespace";
     return "unknown";

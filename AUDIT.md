@@ -442,6 +442,52 @@ uncoloured) and the `geo::` namespace qualifier of `geo::Circle` (clang 22's
 removal of `ElaboratedType` changed qualifier traversal so the written
 nested-name-specifier loc is no longer visited in this type position).
 
+## Round 4 — new-fixture audit (C / modern C++ / templates / broken) (B-25 … B-28)
+
+Added four fixtures to probe code shapes the C++-only `test.cpp` never exercised —
+`test.c` (C), `modern.cpp` (C++20), `templates.cpp` (heavy templates), and
+`broken.cpp` (malformed). Each found real bugs.
+
+### B-25 — C struct/union members orphaned in document symbols
+
+**File:** `bridge/cb/doc.cpp` (`DocSymVisitor`)
+
+A plain C `struct` is a `RecordDecl`, not a `CXXRecordDecl`, so it never reached
+`TraverseCXXRecordDecl`; the struct was absent from the outline and its fields
+floated to the top level (`parent = -1`).  Added a `TraverseRecordDecl` override
+(CXX records still dispatch to the CXX override, so this only fires for C).
+
+### B-26 — class-template specialisation members orphaned
+
+**File:** `bridge/cb/doc.cpp` (`DocSymVisitor`)
+
+Explicit full/partial specialisations route to `TraverseClassTemplate(Partial)
+SpecializationDecl`, not `TraverseCXXRecordDecl`, so `TypeSize<void>::value` and
+`TypeSize<T*>::value` orphaned to the top level and the specialisations were
+missing.  Added both Traverse overrides.
+
+### B-27 — C++20 concepts not indexed
+
+**Files:** `bridge/cb/doc.cpp` (`VisitConceptDecl`), `bridge/cb/core.cpp` (`declKind`)
+
+A `concept Addable = …` produced no document symbol.  Index `ConceptDecl` and
+give it the kind string `"concept"`.
+
+### B-28 — goto/symbol_at resolved to a synthesised node at a constrained call
+
+**File:** `bridge/cb/symbol.cpp` (`RefLocator`, `locate_symbol_at`)
+
+At a concept-constrained call (`twice(total)`, `twice` constrained by `Addable`),
+clang synthesises constraint-checking nodes (`__builtin_addressof`, `std::size_t`,
+…) whose *reported* location is the call site but which name unrelated entities;
+`RefLocator` matched one of them first, so `symbol_at`/`goto`/hover resolved to
+the wrong symbol and line.  These nodes are slippery: `getPresumedLoc` reports the
+call site while `getDecomposedLoc` points into a header (so checking source text
+at the node's own location is unreliable — the two disagree).  Fix: capture the
+identifier physically written under the cursor in `locate_symbol_at` and require
+each candidate's name to equal it (`name == cursor_ident`), so only the symbol the
+user actually pointed at is accepted.
+
 ## Round-2 functions verified correct (no fix needed)
 
 `format` (spacing edits, style-dir), type hierarchy (direct-only super/subtypes),
