@@ -138,3 +138,9 @@ return empty/None without linking against LLVM.
 - [`TODO.md`](TODO.md) — prioritised list of missing APIs and quality gaps
 - [`bridge/clang_bridge.h`](bridge/clang_bridge.h) — full C ABI reference
 - [`crates/freight/src/lsp/indexers/Clang.rs`](../freight/src/lsp/indexers/Clang.rs) — consumer
+
+---
+
+## License
+
+clang-bridge is available under the [MIT License](LICENSE).

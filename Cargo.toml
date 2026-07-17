@@ -2,6 +2,7 @@
 name = "clang-bridge"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
 description = "Rust FFI bindings to clang-tools-extra via a thin C++ bridge"
 build = "build.rs"
 
