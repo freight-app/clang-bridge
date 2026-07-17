@@ -246,10 +246,12 @@ Beyond the reparse items in §1:
       p50/p95 7.5/8.1 ms, below the 100 ms target. Re-run the ignored
       `iostream_vector_reparse_and_completion_latency` test with `--nocapture`
       to collect local figures.
-- [ ] **TU memory cap.** `Clang.rs` keeps one live `ASTUnit` per opened file,
-      evicted only on `didClose`. A long session over many files holds
-      hundreds of MB. Add an LRU (keep N hottest TUs, e.g. 4–8; re-parse on
-      revisit) — clangd's `--background-index` + idle-AST limit is the model.
+- [x] **TU memory cap** (2026-07-17). Freight's `ClangIndexer` keeps at most
+      eight live `ASTUnit`s in a least-recently-used cache. Latest open-buffer
+      text is retained separately, so revisiting an evicted TU or refreshing
+      compile flags reparses unsaved content instead of stale disk text;
+      `didClose` clears both layers. Regressions cover recency-based eviction
+      and reconstruction from an unsaved buffer.
 - [x] **Goto-definition returns the full destination token range**
       (2026-07-17). `CB_Location` now carries an exclusive UTF-16 end position;
       declarations use the declaration-name token range and macro navigation
