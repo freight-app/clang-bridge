@@ -149,14 +149,16 @@ features. Roughly in priority order:
       and that completion after repeated reparse does not reintroduce B-23's
       cached-SourceManager corruption. The explicit `<iostream>/<vector>` debug
       probe measured initial parse 606 ms and reparse p50/p95 60/70 ms.
-- [ ] **Synchronous reparse on the LSP loop.** `freight/src/lsp/mod.rs`
-      reparses on *every* `didChange` (full-text sync, no debounce) before
-      handling the next message — fast typists queue up parses and every
-      other request (hover, completion) waits behind them. **Fix (freight
-      side):** debounce (~150 ms) + drop stale reparses when a newer text
-      version is queued; longer-term move parsing to a worker thread with
-      version-checked cancellation (TU is single-thread-only — keep one
-      worker per TU).
+- [x] **Synchronous reparse debounce** (2026-07-17). Freight reads framed LSP
+      input on a dedicated thread and keeps native C/C++ changes in a 150 ms
+      latest-version queue. Rapid edits reset the deadline and stale document
+      versions are rejected even after an earlier parse has completed. Timer
+      expiry reparses the newest text once; semantic requests force that URI
+      fresh first, workspace-symbol requests flush all pending files, and
+      save/close cancel obsolete work. Queue and server-handler regressions
+      cover coalescing, deadline reset, stale suppression, and request-side
+      flushing. Moving each TU to a cancellable worker remains an optional
+      longer-term latency improvement rather than a default-on blocker.
 - [x] **Concurrent initial-parse working-directory safety** (2026-07-17) —
       `ClangTool::run` temporarily changes CWD to each compilation command's
       directory, so independent parses could resolve relative paths against the
