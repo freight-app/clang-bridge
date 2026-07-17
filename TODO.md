@@ -210,8 +210,12 @@ features. Roughly in priority order:
       default-on): `auto` not coloured as deduced type; `geo::`-style
       nested-name-specifier qualifiers unvisited since clang 22 dropped
       `ElaboratedType`.
-- [ ] **Q-4: call hierarchy on lambdas** — `prepare` bails on anything that
-      isn't a `FunctionDecl`; lambdas are `CXXRecordDecl`s with `operator()`.
+- [x] **Q-4: call hierarchy on lambdas** (2026-07-17) — hierarchy preparation
+      maps lambda-typed variables and their invocation references to the
+      closure's `operator()` USR while preserving the variable's user-facing
+      name and source location. Generic-lambda specializations normalize to the
+      primary call operator. Incoming invocation and outgoing body calls for a
+      captured generic lambda are covered in `tests/callhier.rs`.
 
 ### 2. Differential verification vs clangd (the default-on gate)
 

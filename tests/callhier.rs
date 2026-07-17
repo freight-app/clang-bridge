@@ -104,3 +104,49 @@ fn callhier_incoming_calls() {
         caller_edge.call_line
     );
 }
+
+#[test]
+fn callhier_lambda_variable_maps_to_closure_call_operator() {
+    let src = concat!(
+        "int helper() { return 1; }\n",
+        "int caller() {\n",
+        "  auto fn = [base = 2](auto x) { return helper() + x + base; };\n",
+        "  return fn(1);\n",
+        "}\n",
+    );
+    let path = write_temp("cb_callhier_lambda.cpp", src);
+    let idx = Index::new();
+    let tu = idx
+        .parse(path.to_str().unwrap(), "", &["-std=c++17"])
+        .unwrap();
+
+    let declaration = callhier::call_hierarchy_prepare(&tu, 3, 8)
+        .expect("lambda hierarchy from variable declaration");
+    let invocation =
+        callhier::call_hierarchy_prepare(&tu, 4, 10).expect("lambda hierarchy from invocation");
+    assert_eq!(declaration.name(), "fn");
+    assert_eq!(invocation.name(), "fn");
+    assert_eq!(declaration.usr(), invocation.usr());
+    assert_eq!((declaration.line(), declaration.col()), (3, 8));
+
+    let outgoing: Vec<_> = callhier::outgoing_calls(&tu, &declaration.usr())
+        .iter()
+        .collect();
+    assert!(
+        outgoing.iter().any(|edge| edge.name == "helper"),
+        "lambda outgoing calls: {outgoing:?}"
+    );
+
+    let incoming: Vec<_> = callhier::incoming_calls(&tu, &declaration.usr())
+        .iter()
+        .collect();
+    let caller = incoming
+        .iter()
+        .find(|edge| edge.name == "caller")
+        .expect("caller invokes lambda");
+    assert_eq!(caller.call_line, 4);
+    assert_eq!(
+        caller.call_col, 12,
+        "operator() call anchors at the opening parenthesis"
+    );
+}

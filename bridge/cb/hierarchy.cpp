@@ -18,18 +18,38 @@ struct CB_CallEdgeList {
     CallEdgeEntry              current;
 };
 
+static const FunctionDecl *hierarchyIdentity(const FunctionDecl *FD) {
+    if (const FunctionTemplateDecl *primary = FD->getPrimaryTemplate())
+        return primary->getTemplatedDecl();
+    return FD;
+}
+
+static const FunctionDecl *hierarchyCallable(const NamedDecl *ND) {
+    if (const auto *FD = dyn_cast<FunctionDecl>(ND)) return hierarchyIdentity(FD);
+
+    const CXXRecordDecl *closure = nullptr;
+    if (const auto *VD = dyn_cast<VarDecl>(ND))
+        closure = VD->getType()->getAsCXXRecordDecl();
+    else
+        closure = dyn_cast<CXXRecordDecl>(ND);
+    if (!closure || !closure->isLambda()) return nullptr;
+    return hierarchyIdentity(closure->getLambdaCallOperator());
+}
+
 CB_CallHierItem *cb_call_hierarchy_prepare(CB_TransUnit *tu,
                                            uint32_t line, uint32_t col) {
     const NamedDecl *ND = locate_symbol_at(tu->ast.get(), line, col);
     if (!ND) return nullptr;
-    if (!isa<FunctionDecl>(ND)) return nullptr;
+    const FunctionDecl *callable = hierarchyCallable(ND);
+    if (!callable) return nullptr;
     ASTContext    &Ctx = tu->ast->getASTContext();
     SourceManager &SM  = Ctx.getSourceManager();
     auto *item = new CB_CallHierItem{};
-    item->name   = ND->getNameAsString();
-    item->detail = ND->getQualifiedNameAsString();
+    item->name = ND->getNameAsString();
+    if (item->name.empty()) item->name = callable->getNameAsString();
+    item->detail = callable->getQualifiedNameAsString();
     SmallString<128> buf;
-    index::generateUSRForDecl(ND, buf);
+    index::generateUSRForDecl(callable, buf);
     item->usr  = buf.str().str();
     auto ploc  = SM.getPresumedLoc(ND->getLocation());
     if (ploc.isValid()) {
@@ -57,7 +77,9 @@ class CallGraphVisitor : public RecursiveASTVisitor<CallGraphVisitor> {
     std::vector<const FunctionDecl *> func_stack;
 
     std::string funcUSR(const FunctionDecl *FD) const {
-        SmallString<128> b; index::generateUSRForDecl(FD, b); return b.str().str();
+        SmallString<128> b;
+        index::generateUSRForDecl(hierarchyIdentity(FD), b);
+        return b.str().str();
     }
     bool inTarget() const {
         return !func_stack.empty() && funcUSR(func_stack.back()) == target_usr;
@@ -79,6 +101,15 @@ public:
         RecursiveASTVisitor<CallGraphVisitor>::TraverseCXXMethodDecl(MD);
         func_stack.pop_back();
         return true;
+    }
+    bool TraverseLambdaExpr(LambdaExpr *LE) {
+        // RecursiveASTVisitor visits only the lambda's written body unless
+        // implicit code traversal is enabled, so its call operator never gets
+        // a normal FunctionDecl stack frame. Attribute body calls explicitly.
+        func_stack.push_back(LE->getCallOperator());
+        bool ok = RecursiveASTVisitor<CallGraphVisitor>::TraverseLambdaExpr(LE);
+        func_stack.pop_back();
+        return ok;
     }
 
     bool VisitCallExpr(CallExpr *CE) {
