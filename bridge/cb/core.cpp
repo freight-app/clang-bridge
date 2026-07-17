@@ -1,5 +1,9 @@
 #include "internal.h"
 
+#include <llvm/Support/FileSystem.h>
+
+#include <mutex>
+
 // getName() asserts when the DeclarationName is not a plain identifier
 // (constructors, destructors, operators, conversion functions).  Use this
 // helper everywhere a NamedDecl's name is not known to be an identifier.
@@ -81,6 +85,12 @@ static std::unique_ptr<ASTUnit> build_ast_with_diagnostics(
     const char * const *args,
     size_t nargs
 ) {
+    // ClangTool changes the process working directory to the compilation
+    // command's directory while it runs. Guard setup as well as run() so a
+    // second thread cannot construct relative paths while that CWD is active.
+    static std::mutex s_clang_tool_mutex;
+    std::lock_guard<std::mutex> lock(s_clang_tool_mutex);
+
     std::vector<std::string> compile_args(args, args + nargs);
     const std::string dir = (working_dir && *working_dir) ? working_dir : ".";
     FixedCompilationDatabase db(dir, compile_args);
@@ -134,28 +144,38 @@ CB_TransUnit *cb_parse_unsaved(
     const char * const *args,
     size_t      nargs
 ) {
-    // Build a unique temp file name preserving the extension so Clang can
-    // infer the language (e.g. .cpp → C++, .c → C).
+    // Atomically create a unique temp file while preserving the extension so
+    // Clang can infer the language (e.g. .cpp → C++, .c → C). A hash of the
+    // virtual path is insufficient because editors can parse the same URI
+    // concurrently during startup or reconnect.
     std::string vp_str(virtual_path);
     auto dot = vp_str.rfind('.');
-    std::string ext = (dot != std::string::npos) ? vp_str.substr(dot) : ".cpp";
-    std::string tmp_path = "/tmp/cb_unsaved_" + std::to_string(
-        std::hash<std::string>{}(vp_str) ^ (size_t)(uintptr_t)contents
-    ) + ext;
+    StringRef suffix = (dot != std::string::npos)
+                           ? StringRef(vp_str).drop_front(dot + 1)
+                           : StringRef("cpp");
+    SmallString<128> tmp_path;
+    int tmp_fd = -1;
+    std::error_code temp_error = llvm::sys::fs::createTemporaryFile(
+        "cb_unsaved", suffix, tmp_fd, tmp_path);
+    if (temp_error) {
+        if (idx) idx->last_error =
+            "cannot create temp file: " + temp_error.message();
+        return nullptr;
+    }
     {
-        std::FILE *f = std::fopen(tmp_path.c_str(), "wb");
-        if (!f) {
-            if (idx) idx->last_error =
-                "cannot open temp file: " + tmp_path;
+        llvm::raw_fd_ostream out(tmp_fd, /*shouldClose=*/true);
+        out.write(contents, len);
+        out.close();
+        if (out.has_error()) {
+            if (idx) idx->last_error = "cannot write temp file: " + tmp_path.str().str();
+            llvm::sys::fs::remove(tmp_path);
             return nullptr;
         }
-        std::fwrite(contents, 1, len, f);
-        std::fclose(f);
     }
 
     const std::string dir = (working_dir && *working_dir) ? working_dir : ".";
     auto ast = build_ast_with_diagnostics(tmp_path.c_str(), dir.c_str(), args, nargs);
-    std::remove(tmp_path.c_str());
+    llvm::sys::fs::remove(tmp_path);
 
     if (!ast) {
         if (idx) idx->last_error =

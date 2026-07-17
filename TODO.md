@@ -157,15 +157,17 @@ features. Roughly in priority order:
       version is queued; longer-term move parsing to a worker thread with
       version-checked cancellation (TU is single-thread-only — keep one
       worker per TU).
-- [ ] **Concurrent initial parses race through the process working directory.**
+- [x] **Concurrent initial-parse working-directory safety** (2026-07-17) —
       `ClangTool::run` temporarily changes CWD to each compilation command's
-      directory. Independent parses on different threads can therefore resolve
-      relative paths against the wrong project or fail while restoring a
-      concurrently removed temporary directory. The UTF-16 fixture serializes
-      its parse calls to stay deterministic, but the bridge needs a production
-      fix before parse workers are introduced: preferably stop using
-      process-CWD-changing `ClangTool::run`; otherwise guard the operation with
-      a documented global parse mutex.
+      directory, so independent parses could resolve relative paths against the
+      wrong project or fail while restoring a removed temporary directory.
+      `core.cpp` now guards the process-global operation with a static mutex;
+      AST queries and reparses remain independent. Unsaved parses also use
+      LLVM's atomic temporary-file creation instead of a colliding virtual-path
+      hash. `tests/concurrent_parse.rs` starts synchronized parses in two
+      projects with conflicting relative `config.hpp` files and synchronized
+      unsaved parses sharing one virtual path, then verifies every TU remains
+      isolated.
 - [ ] **In-process crash = whole-server crash.** A clang assertion or
       segfault on malformed input takes down `freight lsp` *for all
       languages* — clangd being a subprocess means an editor only loses one
