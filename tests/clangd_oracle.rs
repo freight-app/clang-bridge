@@ -62,7 +62,8 @@ impl Clangd {
                             "signatureInformation": {
                                 "parameterInformation": { "labelOffsetSupport": true }
                             }
-                        }
+                        },
+                        "hover": { "contentFormat": ["markdown"] }
                     }
                 }
             }
@@ -193,6 +194,26 @@ fn bridge_range(diagnostic: &Diagnostic) -> Value {
             "character": diagnostic.end_col.saturating_sub(1)
         }
     })
+}
+
+fn bridge_hover_range(range: clang_bridge::hover::HoverRange) -> Value {
+    json!({
+        "start": {
+            "line": range.start_line.saturating_sub(1),
+            "character": range.start_col.saturating_sub(1)
+        },
+        "end": {
+            "line": range.end_line.saturating_sub(1),
+            "character": range.end_col.saturating_sub(1)
+        }
+    })
+}
+
+fn clangd_hover_text(hover: &Value) -> &str {
+    hover["contents"]["value"]
+        .as_str()
+        .or_else(|| hover["contents"].as_str())
+        .expect("clangd markdown hover contents")
 }
 
 fn parse(path: &Path, working_dir: &Path) -> (Index, clang_bridge::TranslationUnit) {
@@ -367,5 +388,56 @@ fn signature_help_matches_clangd_for_nested_and_partial_calls() {
             .map(|parameter| parameter.label.clone())
             .collect();
         assert_eq!(clangd_parameter_labels(clangd_signature), bridge_params);
+    }
+}
+
+#[test]
+#[ignore = "requires clangd; run explicitly for the differential audit"]
+fn hover_matches_clangd_facts_and_identifier_ranges() {
+    let source = concat!(
+        "/// Add two integers.\n",
+        "int add(int a, int b) { return a + b; }\n",
+        "int main() {\n",
+        "  auto answer = add(40, 2);\n",
+        "  return answer;\n",
+        "}\n",
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let main = dir.path().join("main.cpp");
+    std::fs::write(&main, source).unwrap();
+    let mut clangd = Clangd::start(dir.path()).expect("clangd must be available");
+    clangd.open(&main, source);
+    let (_index, tu) = parse(&main, dir.path());
+
+    let cases = [
+        (3, 18, &["int add(int a, int b)", "Add two integers"][..]),
+        (4, 11, &["int", "answer"][..]),
+    ];
+    for (offset, (line, character, facts)) in cases.into_iter().enumerate() {
+        let clangd_hover = clangd.request(
+            30 + offset as u64,
+            "textDocument/hover",
+            json!({
+                "textDocument": { "uri": file_uri(&main) },
+                "position": { "line": line, "character": character }
+            }),
+        );
+        let bridge_hover = clang_bridge::hover::hover_full(&tu, line + 1, character + 1)
+            .unwrap_or_else(|| panic!("bridge hover at {line}:{character}"));
+        let range = clang_bridge::hover::hover_range(&tu, line + 1, character + 1)
+            .expect("bridge identifier range");
+
+        assert_eq!(clangd_hover["range"], bridge_hover_range(range));
+        for fact in facts {
+            assert!(
+                clangd_hover_text(&clangd_hover).contains(fact),
+                "clangd omitted {fact:?}: {}",
+                clangd_hover_text(&clangd_hover)
+            );
+            assert!(
+                bridge_hover.contains(fact),
+                "bridge omitted {fact:?}: {bridge_hover}"
+            );
+        }
     }
 }

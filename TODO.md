@@ -253,8 +253,15 @@ Reuse the clangd JSON-RPC oracle harness from the 2026-06-10 audit
       overload and parameter labels. Run with `cargo test -p clang-bridge
       --test clangd_oracle signature_help_matches_clangd_for_nested_and_partial_calls
       -- --ignored --nocapture`.
-- [ ] **Hover** — content + range parity (markdown shape may differ; diff the
-      facts: signature, doc, type).
+- [x] **Hover differential** (2026-07-17) — the clangd oracle compares
+      signature, documentation, deduced value-type facts, and exact half-open
+      UTF-16 identifier ranges. The bridge now exposes `cb_hover_range` and
+      reports resolved placeholder types separately from the written `auto`
+      declaration. Freight includes the range in LSP responses and falls back
+      to macro hover from any position inside the macro token. Run with `cargo
+      test -p clang-bridge --test clangd_oracle
+      hover_matches_clangd_facts_and_identifier_ranges -- --ignored
+      --nocapture`.
 - [ ] **Call/type hierarchy** — edge sets on the fixture hierarchy.
 - [ ] **Completion** — item kinds/details/sort order on member access and `::`.
 - [ ] **Formatting** — output equality under the same `.clang-format`.

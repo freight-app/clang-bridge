@@ -161,6 +161,15 @@ char *cb_hover_markdown(CB_TransUnit *tu, uint32_t line, uint32_t col);
 /// comment is available.  Caller must free with cb_free_string().
 char *cb_hover_full(CB_TransUnit *tu, uint32_t line, uint32_t col);
 
+typedef struct {
+    uint32_t start_line, start_col;
+    uint32_t end_line, end_col;
+} CB_HoverRange;
+
+/// Return the half-open range of the identifier token at the hover position.
+int cb_hover_range(CB_TransUnit *tu, uint32_t line, uint32_t col,
+                   CB_HoverRange *out);
+
 // ── Go-to-definition ──────────────────────────────────────────────────────────
 
 typedef struct {

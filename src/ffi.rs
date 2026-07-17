@@ -17,6 +17,14 @@ pub struct CB_Symbol(());
 pub struct CB_CompletionIter(());
 
 #[repr(C)]
+pub struct CB_HoverRange {
+    pub start_line: u32,
+    pub start_col: u32,
+    pub end_line: u32,
+    pub end_col: u32,
+}
+
+#[repr(C)]
 pub struct CB_Location {
     pub file: *mut std::ffi::c_char,
     pub line: u32,
@@ -75,10 +83,10 @@ pub struct CB_SigHelp(());
 #[repr(C)]
 pub struct CB_Inclusion {
     pub including_file: *const c_char,
-    pub included_file:  *const c_char,
-    pub line:      u32,
+    pub included_file: *const c_char,
+    pub line: u32,
     pub start_col: u32,
-    pub end_col:   u32,
+    pub end_col: u32,
 }
 
 #[repr(C)]
@@ -86,9 +94,9 @@ pub struct CB_InclusionList(());
 
 #[repr(C)]
 pub struct CB_SemanticToken {
-    pub line:       u32,
-    pub col:        u32,
-    pub length:     u32,
+    pub line: u32,
+    pub col: u32,
+    pub length: u32,
     pub token_type: u8,
 }
 
@@ -97,8 +105,8 @@ pub struct CB_SemanticTokenList(());
 
 #[repr(C)]
 pub struct CB_FormatEdit {
-    pub offset:      u32,
-    pub length:      u32,
+    pub offset: u32,
+    pub length: u32,
     pub replacement: *const c_char,
 }
 
@@ -107,9 +115,9 @@ pub struct CB_FormatList(());
 
 #[repr(C)]
 pub struct CB_Reference {
-    pub file:          *const c_char,
-    pub line:          u32,
-    pub col:           u32,
+    pub file: *const c_char,
+    pub line: u32,
+    pub col: u32,
     pub is_definition: i32,
 }
 
@@ -118,11 +126,11 @@ pub struct CB_ReferenceList(());
 
 #[repr(C)]
 pub struct CB_RenameEdit {
-    pub file:         *const c_char,
-    pub line:         u32,
-    pub col:          u32,
+    pub file: *const c_char,
+    pub line: u32,
+    pub col: u32,
     pub old_name_len: u32,
-    pub new_name:     *const c_char,
+    pub new_name: *const c_char,
 }
 
 #[repr(C)]
@@ -130,10 +138,10 @@ pub struct CB_RenameList(());
 
 #[repr(C)]
 pub struct CB_InlayHint {
-    pub line:  u32,
-    pub col:   u32,
+    pub line: u32,
+    pub col: u32,
     pub label: *const c_char,
-    pub kind:  u8,
+    pub kind: u8,
 }
 
 #[repr(C)]
@@ -141,11 +149,11 @@ pub struct CB_InlayHintList(());
 
 #[repr(C)]
 pub struct CB_HighlightEntry {
-    pub line:     u32,
-    pub col:      u32,
+    pub line: u32,
+    pub col: u32,
     pub end_line: u32,
-    pub end_col:  u32,
-    pub kind:     u8,
+    pub end_col: u32,
+    pub kind: u8,
 }
 #[repr(C)]
 pub struct CB_HighlightList(());
@@ -153,20 +161,20 @@ pub struct CB_HighlightList(());
 #[repr(C)]
 pub struct CB_FoldingRange {
     pub start_line: u32,
-    pub end_line:   u32,
-    pub kind:       *const c_char,
+    pub end_line: u32,
+    pub kind: *const c_char,
 }
 #[repr(C)]
 pub struct CB_FoldingRangeList(());
 
 #[repr(C)]
 pub struct CB_CodeAction {
-    pub title:       *const c_char,
-    pub file:        *const c_char,
-    pub line:        u32,
-    pub col:         u32,
-    pub end_line:    u32,
-    pub end_col:     u32,
+    pub title: *const c_char,
+    pub file: *const c_char,
+    pub line: u32,
+    pub col: u32,
+    pub end_line: u32,
+    pub end_col: u32,
     pub replacement: *const c_char,
 }
 #[repr(C)]
@@ -174,13 +182,13 @@ pub struct CB_CodeActionList(());
 
 #[repr(C)]
 pub struct CB_WorkspaceSym {
-    pub name:   *const c_char,
+    pub name: *const c_char,
     pub detail: *const c_char,
-    pub kind:   *const c_char,
-    pub file:   *const c_char,
-    pub line:   u32,
-    pub col:    u32,
-    pub usr:    *const c_char,
+    pub kind: *const c_char,
+    pub file: *const c_char,
+    pub line: u32,
+    pub col: u32,
+    pub usr: *const c_char,
 }
 #[repr(C)]
 pub struct CB_WorkspaceSymList(());
@@ -189,14 +197,14 @@ pub struct CB_WorkspaceSymList(());
 pub struct CB_CallHierItem(());
 #[repr(C)]
 pub struct CB_CallEdge {
-    pub name:      *const c_char,
-    pub detail:    *const c_char,
-    pub file:      *const c_char,
-    pub line:      u32,
-    pub col:       u32,
-    pub usr:       *const c_char,
+    pub name: *const c_char,
+    pub detail: *const c_char,
+    pub file: *const c_char,
+    pub line: u32,
+    pub col: u32,
+    pub usr: *const c_char,
     pub call_line: u32,
-    pub call_col:  u32,
+    pub call_col: u32,
 }
 #[repr(C)]
 pub struct CB_CallEdgeList(());
@@ -205,12 +213,12 @@ pub struct CB_CallEdgeList(());
 pub struct CB_TypeHierItem(());
 #[repr(C)]
 pub struct CB_TypeHierEntry {
-    pub name:   *const c_char,
+    pub name: *const c_char,
     pub detail: *const c_char,
-    pub file:   *const c_char,
-    pub line:   u32,
-    pub col:    u32,
-    pub usr:    *const c_char,
+    pub file: *const c_char,
+    pub line: u32,
+    pub col: u32,
+    pub usr: *const c_char,
 }
 #[repr(C)]
 pub struct CB_TypeHierList(());
@@ -274,7 +282,11 @@ extern "C" {
     pub fn cb_sig_help_overload_count(sh: *const CB_SigHelp) -> usize;
     pub fn cb_sig_help_label(sh: *mut CB_SigHelp, overload_i: usize) -> *const c_char;
     pub fn cb_sig_help_param_count(sh: *const CB_SigHelp, overload_i: usize) -> usize;
-    pub fn cb_sig_help_param_label(sh: *mut CB_SigHelp, overload_i: usize, param_i: usize) -> *const c_char;
+    pub fn cb_sig_help_param_label(
+        sh: *mut CB_SigHelp,
+        overload_i: usize,
+        param_i: usize,
+    ) -> *const c_char;
     pub fn cb_sig_help_destroy(sh: *mut CB_SigHelp);
 
     // Document symbols
@@ -295,6 +307,12 @@ extern "C" {
     // Hover markdown
     pub fn cb_hover_markdown(tu: *mut CB_TransUnit, line: u32, col: u32) -> *mut c_char;
     pub fn cb_hover_full(tu: *mut CB_TransUnit, line: u32, col: u32) -> *mut c_char;
+    pub fn cb_hover_range(
+        tu: *mut CB_TransUnit,
+        line: u32,
+        col: u32,
+        out: *mut CB_HoverRange,
+    ) -> i32;
 
     // Go-to-definition
     pub fn cb_goto_definition(
@@ -402,7 +420,11 @@ extern "C" {
     // Folding ranges
     pub fn cb_folding_ranges(tu: *mut CB_TransUnit) -> *mut CB_FoldingRangeList;
     pub fn cb_folding_range_count(list: *const CB_FoldingRangeList) -> usize;
-    pub fn cb_folding_range_get(list: *const CB_FoldingRangeList, i: usize, out: *mut CB_FoldingRange);
+    pub fn cb_folding_range_get(
+        list: *const CB_FoldingRangeList,
+        i: usize,
+        out: *mut CB_FoldingRange,
+    );
     pub fn cb_folding_range_list_destroy(list: *mut CB_FoldingRangeList);
 
     // Code actions
@@ -413,13 +435,24 @@ extern "C" {
 
     // Workspace symbols
     pub fn cb_workspace_index_add(idx: *mut CB_Index, tu: *mut CB_TransUnit);
-    pub fn cb_workspace_symbols(idx: *mut CB_Index, query: *const c_char) -> *mut CB_WorkspaceSymList;
+    pub fn cb_workspace_symbols(
+        idx: *mut CB_Index,
+        query: *const c_char,
+    ) -> *mut CB_WorkspaceSymList;
     pub fn cb_workspace_sym_count(list: *const CB_WorkspaceSymList) -> usize;
-    pub fn cb_workspace_sym_get(list: *const CB_WorkspaceSymList, i: usize, out: *mut CB_WorkspaceSym);
+    pub fn cb_workspace_sym_get(
+        list: *const CB_WorkspaceSymList,
+        i: usize,
+        out: *mut CB_WorkspaceSym,
+    );
     pub fn cb_workspace_sym_list_destroy(list: *mut CB_WorkspaceSymList);
 
     // Call hierarchy
-    pub fn cb_call_hierarchy_prepare(tu: *mut CB_TransUnit, line: u32, col: u32) -> *mut CB_CallHierItem;
+    pub fn cb_call_hierarchy_prepare(
+        tu: *mut CB_TransUnit,
+        line: u32,
+        col: u32,
+    ) -> *mut CB_CallHierItem;
     pub fn cb_call_hier_item_destroy(item: *mut CB_CallHierItem);
     pub fn cb_call_hier_name(item: *const CB_CallHierItem) -> *const c_char;
     pub fn cb_call_hier_detail(item: *const CB_CallHierItem) -> *const c_char;
@@ -434,7 +467,11 @@ extern "C" {
     pub fn cb_call_edge_list_destroy(list: *mut CB_CallEdgeList);
 
     // Type hierarchy
-    pub fn cb_type_hierarchy_prepare(tu: *mut CB_TransUnit, line: u32, col: u32) -> *mut CB_TypeHierItem;
+    pub fn cb_type_hierarchy_prepare(
+        tu: *mut CB_TransUnit,
+        line: u32,
+        col: u32,
+    ) -> *mut CB_TypeHierItem;
     pub fn cb_type_hier_item_destroy(item: *mut CB_TypeHierItem);
     pub fn cb_type_hier_name(item: *const CB_TypeHierItem) -> *const c_char;
     pub fn cb_type_hier_detail(item: *const CB_TypeHierItem) -> *const c_char;

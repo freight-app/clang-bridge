@@ -91,6 +91,23 @@ char *cb_hover_full(CB_TransUnit *tu, uint32_t line, uint32_t col) {
     std::string sig = prettySignature(ND, Ctx);
     if (!sig.empty()) { md += "```cpp\n"; md += sig; md += "\n```"; }
 
+    // Clangd reports the resolved type separately for values. This matters for
+    // placeholders: the printed declaration remains `auto answer = ...`, while
+    // the type fact should say `int` after deduction.
+    if (const auto *VD = dyn_cast<ValueDecl>(ND);
+        VD && !isa<FunctionDecl>(VD)) {
+        QualType type = VD->getType();
+        if (!type.isNull()) {
+            PrintingPolicy policy(Ctx.getLangOpts());
+            policy.SuppressScope = 0;
+            std::string typeText = type.getAsString(policy);
+            if (!typeText.empty()) {
+                if (!md.empty()) md += "\n\n";
+                md += "Type: `" + typeText + "`";
+            }
+        }
+    }
+
     // Full structured comment (FullComment AST)
     const comments::FullComment *FC = Ctx.getCommentForDecl(ND, nullptr);
     if (FC) {
@@ -120,6 +137,38 @@ char *cb_hover_full(CB_TransUnit *tu, uint32_t line, uint32_t col) {
 
     if (md.empty()) return nullptr;
     return strdup(md.c_str());
+    });
+}
+
+int cb_hover_range(CB_TransUnit *tu, uint32_t line, uint32_t col,
+                   CB_HoverRange *out) {
+    return cb_recover(tu, __func__, 0, [&]() -> int {
+        if (!out) return 0;
+        ASTContext &Ctx = tu->ast->getASTContext();
+        const SourceManager &SM = Ctx.getSourceManager();
+        const LangOptions &LangOpts = Ctx.getLangOpts();
+        SourceLocation cursor = translate_line_col_utf16(
+            SM, SM.getMainFileID(), line, col);
+        if (cursor.isInvalid()) return 0;
+        SourceLocation begin = Lexer::GetBeginningOfToken(cursor, SM, LangOpts);
+        if (begin.isInvalid()) return 0;
+
+        Token token;
+        if (Lexer::getRawToken(begin, token, SM, LangOpts,
+                               /*IgnoreWhiteSpace=*/true))
+            return 0;
+        if (token.getKind() != tok::identifier &&
+            token.getKind() != tok::raw_identifier)
+            return 0;
+        std::string spelling = Lexer::getSpelling(token, SM, LangOpts);
+        if (spelling.empty()) return 0;
+        auto presumed = SM.getPresumedLoc(begin);
+        if (!presumed.isValid()) return 0;
+
+        out->start_line = out->end_line = presumed.getLine();
+        out->start_col = source_location_utf16_col(SM, begin);
+        out->end_col = out->start_col + utf16_length(spelling);
+        return 1;
     });
 }
 

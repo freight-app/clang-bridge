@@ -15,7 +15,9 @@ fn hover_full_includes_signature() {
     let src = "/// Add two integers.\nint add(int a, int b);";
     let path = write_temp("cb_hf_sig.hpp", src);
     let idx = Index::new();
-    let tu = idx.parse(path.to_str().unwrap(), "", &["-std=c++17"]).unwrap();
+    let tu = idx
+        .parse(path.to_str().unwrap(), "", &["-std=c++17"])
+        .unwrap();
 
     let md = hover::hover_full(&tu, 2, 5).expect("expected full hover");
     assert!(md.contains("add"), "signature missing: {md}");
@@ -28,7 +30,9 @@ fn hover_full_includes_full_comment() {
     let src = "/// Brief line.\n/// Second line.\nint value;";
     let path = write_temp("cb_hf_full.hpp", src);
     let idx = Index::new();
-    let tu = idx.parse(path.to_str().unwrap(), "", &["-std=c++17"]).unwrap();
+    let tu = idx
+        .parse(path.to_str().unwrap(), "", &["-std=c++17"])
+        .unwrap();
 
     let md = hover::hover_full(&tu, 3, 5).expect("expected full hover");
     // The full text should include the second line
@@ -43,7 +47,9 @@ fn hover_full_includes_definition_location() {
     let src = "int square(int x) { return x*x; }";
     let path = write_temp("cb_hf_loc.cpp", src);
     let idx = Index::new();
-    let tu = idx.parse(path.to_str().unwrap(), "", &["-std=c++17"]).unwrap();
+    let tu = idx
+        .parse(path.to_str().unwrap(), "", &["-std=c++17"])
+        .unwrap();
 
     let md = hover::hover_full(&tu, 1, 5).expect("expected full hover");
     // Should include "Defined in ..." footer
@@ -59,7 +65,9 @@ fn hover_template_function_includes_template_params() {
     let src = "template<typename T>\nT identity(T x) { return x; }";
     let path = write_temp("cb_hf_tmpl.cpp", src);
     let idx = Index::new();
-    let tu = idx.parse(path.to_str().unwrap(), "", &["-std=c++17"]).unwrap();
+    let tu = idx
+        .parse(path.to_str().unwrap(), "", &["-std=c++17"])
+        .unwrap();
 
     let md = hover::hover_full(&tu, 2, 3).expect("expected hover on template function");
     assert!(
@@ -77,8 +85,49 @@ fn hover_full_joins_paragraph_lines_with_space() {
         "/// Brief line.\n/// More detail here.\nint fn(int x);",
     );
     let idx = Index::new();
-    let tu = idx.parse(path.to_str().unwrap(), "", &["-std=c++17"]).unwrap();
+    let tu = idx
+        .parse(path.to_str().unwrap(), "", &["-std=c++17"])
+        .unwrap();
     let md = hover::hover_full(&tu, 3, 5).expect("hover");
-    assert!(md.contains("Brief line. More detail here."), "lines should be space-joined:\n{md}");
-    assert!(!md.contains("line.More"), "lines must not run together:\n{md}");
+    assert!(
+        md.contains("Brief line. More detail here."),
+        "lines should be space-joined:\n{md}"
+    );
+    assert!(
+        !md.contains("line.More"),
+        "lines must not run together:\n{md}"
+    );
+}
+
+#[test]
+fn hover_full_reports_the_resolved_placeholder_type() {
+    let path = write_temp(
+        "cb_hover_auto.cpp",
+        "int main() { auto answer = 42; return answer; }",
+    );
+    let idx = Index::new();
+    let tu = idx
+        .parse(path.to_str().unwrap(), "", &["-std=c++17"])
+        .unwrap();
+
+    let md = hover::hover_full(&tu, 1, 39).expect("hover on answer use");
+    assert!(md.contains("Type: `int`"), "resolved type missing:\n{md}");
+}
+
+#[test]
+fn hover_range_covers_the_complete_identifier() {
+    let path = write_temp(
+        "cb_hover_range.cpp",
+        "int target = 42;\nint value = target;",
+    );
+    let idx = Index::new();
+    let tu = idx
+        .parse(path.to_str().unwrap(), "", &["-std=c++17"])
+        .unwrap();
+
+    let range = hover::hover_range(&tu, 2, 15).expect("range from middle of target");
+    assert_eq!(range.start_line, 2);
+    assert_eq!(range.start_col, 13);
+    assert_eq!(range.end_line, 2);
+    assert_eq!(range.end_col, 19);
 }

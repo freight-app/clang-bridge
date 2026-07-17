@@ -531,6 +531,24 @@ leaving the verified API unreachable when clangd was disabled. Freight now
 returns native LSP `SignatureHelp` with all overload/parameter labels and the
 bridge's active parameter.
 
+### B-31 — hover omitted ranges, deduced types, and macro fallback
+
+**Files:** `bridge/cb/hover.cpp`, `tests/clangd_oracle.rs`, and Freight's
+`src/lsp/indexers/Clang.rs`
+
+The clangd oracle verifies the signature and documentation for a function use,
+the resolved `int` type for an `auto` value, and exact half-open UTF-16 ranges
+for both identifier tokens. The bridge previously returned only Markdown, and
+its declaration spelling retained `auto` without separately reporting the
+deduced type. It now exposes `cb_hover_range` and appends the resolved value
+type to detailed hover content.
+
+Freight now carries the token range into the LSP `Hover` response and uses
+`cb_macro_at` when declaration hover is unavailable. Because Clang records a
+macro expansion at the first character, Freight retries macro lookup at the
+token range start so hovering the middle of a macro name works as clients
+expect.
+
 ## Round-2 functions verified correct (no fix needed)
 
 `format` (spacing edits, style-dir), type hierarchy (direct-only super/subtypes),
