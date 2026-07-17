@@ -144,3 +144,28 @@ fn semantic_tokens_class_template_single_type_token() {
         );
     }
 }
+
+#[test]
+fn semantic_tokens_cover_auto_and_namespace_qualifiers() {
+    let src = "namespace outer { namespace inner { struct Value {}; } }\n\
+               int main() { auto value = outer::inner::Value{}; return 0; }";
+    let path = write_temp("cb_semtok_cosmetic_gaps.cpp", src);
+    let idx = Index::new();
+    let tu = idx
+        .parse(path.to_str().unwrap(), "", &["-std=c++17"])
+        .unwrap();
+    let toks = semtok::semantic_tokens(&tu);
+
+    let line = src.lines().nth(1).unwrap();
+    let token_at = |name: &str| {
+        let col = line.find(name).unwrap() as u32 + 1;
+        toks.iter()
+            .find(|token| token.line == 2 && token.col == col)
+            .map(|token| token.token_type)
+    };
+
+    assert_eq!(token_at("auto"), Some(tok_type::TYPE));
+    assert_eq!(token_at("outer"), Some(tok_type::NAMESPACE));
+    assert_eq!(token_at("inner"), Some(tok_type::NAMESPACE));
+    assert_eq!(token_at("Value"), Some(tok_type::TYPE));
+}

@@ -435,12 +435,15 @@ extras.  The bridge visited declarations and expression references but never
 - macro **definition** names (`#define MAX_ITEMS`) via `Preprocessor::macros()`;
   the existing loop only marked macro use sites.
 
-Net: **18 missing → 3, 0 spurious extras.**  The 3 remaining are cosmetic and
-left as accepted gaps: the two `auto` placeholders (clangd colours `auto` as a
-deduced type; the bridge's token model is named-entity based and leaves keywords
-uncoloured) and the `geo::` namespace qualifier of `geo::Circle` (clang 22's
-removal of `ElaboratedType` changed qualifier traversal so the written
-nested-name-specifier loc is no longer visited in this type position).
+The initial B-24 pass reduced the result from **18 missing → 3, 0 spurious
+extras**. The remaining positions were closed on 2026-07-17: `AutoTypeLoc`
+emits each written `auto` as a `type`, and a custom
+`TraverseNestedNameSpecifierLoc` emits namespace components such as `geo` in
+`geo::Circle` (including multi-component qualifiers). Net identifier-position
+and token-type result: **18 missing → 0, 0 spurious extras** against clangd 22.
+Clangd additionally marks `auto` with its `deduced` modifier; Freight's shared
+native C/C++/Fortran/asm legend intentionally advertises no modifiers, so that
+wire-level distinction is not part of this B-24 parity comparison.
 
 ## Round 4 — new-fixture audit (C / modern C++ / templates / broken) (B-25 … B-28)
 

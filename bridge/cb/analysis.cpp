@@ -179,7 +179,7 @@ public:
 
     bool shouldVisitTemplateInstantiations() const { return false; }
 
-    void emitToken(SourceLocation loc, const NamedDecl *D) {
+    void emitToken(SourceLocation loc, StringRef name, uint8_t tokenType) {
         loc = SM.getSpellingLoc(loc);
         if (SM.isInSystemHeader(loc)) return;
         // semanticTokens is per-document: only tokens in the main file belong in
@@ -189,16 +189,18 @@ public:
         if (SM.getFileID(loc) != SM.getMainFileID()) return;
         auto p = SM.getPresumedLoc(loc);
         if (!p.isValid()) return;
-
-        StringRef name = safeDeclName(D);
         if (name.empty()) return;
 
         SemanticTokenEntry t;
         t.line       = p.getLine();
         t.col        = source_location_utf16_col(SM, loc);
         t.length     = utf16_length(name);
-        t.token_type = semtokForDecl(D);
+        t.token_type = tokenType;
         tokens.push_back(t);
+    }
+
+    void emitToken(SourceLocation loc, const NamedDecl *D) {
+        emitToken(loc, safeDeclName(D), semtokForDecl(D));
     }
 
     // Declarations
@@ -228,12 +230,42 @@ public:
     bool VisitTypeLoc(TypeLoc TL) {
         const NamedDecl *D = nullptr;
         SourceLocation   loc;
-        if (auto T = TL.getAs<RecordTypeLoc>())                  { D = T.getDecl();            loc = T.getNameLoc(); }
+        if (auto T = TL.getAs<AutoTypeLoc>()) {
+            if (T.getAutoKeyword() == AutoTypeKeyword::Auto)
+                emitToken(T.getNameLoc(), "auto", CB_TOK_TYPE);
+        }
+        else if (auto T = TL.getAs<RecordTypeLoc>())             { D = T.getDecl();            loc = T.getNameLoc(); }
         else if (auto T = TL.getAs<EnumTypeLoc>())               { D = T.getDecl();            loc = T.getNameLoc(); }
         else if (auto T = TL.getAs<TypedefTypeLoc>())            { D = T.getTypePtr()->getDecl(); loc = T.getNameLoc(); }
         else if (auto T = TL.getAs<TemplateTypeParmTypeLoc>())   { D = T.getDecl();            loc = T.getNameLoc(); }
         else if (auto T = TL.getAs<InjectedClassNameTypeLoc>())  { D = T.getDecl();            loc = T.getNameLoc(); }
         if (D && loc.isValid()) emitToken(loc, D);
+        return true;
+    }
+
+    // Clang 22 no longer represents a qualified type such as `geo::Circle`
+    // with ElaboratedTypeLoc. RecursiveASTVisitor traverses namespace
+    // qualifiers but does not expose a Visit hook for them, so emit each
+    // written namespace component while preserving normal type traversal.
+    bool TraverseNestedNameSpecifierLoc(NestedNameSpecifierLoc NNS) {
+        switch (NNS.getNestedNameSpecifier().getKind()) {
+        case NestedNameSpecifier::Kind::Null:
+        case NestedNameSpecifier::Kind::Global:
+        case NestedNameSpecifier::Kind::MicrosoftSuper:
+            return true;
+        case NestedNameSpecifier::Kind::Namespace: {
+            auto component = NNS.castAsNamespaceAndPrefix();
+            if (!TraverseNestedNameSpecifierLoc(component.Prefix)) return false;
+            emitToken(NNS.getLocalBeginLoc(), safeDeclName(component.Namespace),
+                      CB_TOK_NAMESPACE);
+            return true;
+        }
+        case NestedNameSpecifier::Kind::Type: {
+            TypeLoc typeLoc = NNS.castAsTypeLoc();
+            if (!TraverseNestedNameSpecifierLoc(typeLoc.getPrefix())) return false;
+            return TraverseTypeLoc(typeLoc, /*TraverseQualifier=*/false);
+        }
+        }
         return true;
     }
 

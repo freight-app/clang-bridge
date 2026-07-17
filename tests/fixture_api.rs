@@ -312,7 +312,31 @@ fn semantic_tokens_cover_type_references() {
     // base-class reference `Shape` in `struct Circle : Shape`
     check("struct Circle : Shape", "Shape", tok_type::TYPE, "base-class ref");
     // variable type `Circle` in `geo::Circle circle(2.0)`
-    check("geo::Circle circle", "Circle", tok_type::TYPE, "variable type ref");
+    check(
+        "geo::Circle circle",
+        "geo",
+        tok_type::NAMESPACE,
+        "namespace qualifier",
+    );
+    check(
+        "geo::Circle circle",
+        "Circle",
+        tok_type::TYPE,
+        "variable type ref",
+    );
+    // deduced placeholders are type tokens in clangd's legend
+    check(
+        "auto answer = add",
+        "auto",
+        tok_type::TYPE,
+        "deduced auto type",
+    );
+    check(
+        "auto doubled = square",
+        "auto",
+        tok_type::TYPE,
+        "second deduced auto type",
+    );
     // template-parameter use `T` in the clamp signature
     check("T clamp(T value", "T", tok_type::TYPE, "template-param use");
     // constructor-initializer member `radius` in `: radius(r)`

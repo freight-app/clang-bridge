@@ -211,10 +211,15 @@ features. Roughly in priority order:
       include chains. Freight publishes `In included file: ...` on the direct
       include path and adds the original header range as `relatedInformation`.
       Regressions cover both the bridge contract and the Freight LSP boundary.
-- [ ] **Semantic-token cosmetic gaps** (accepted in B-24, revisit before
-      default-on): `auto` not coloured as deduced type; `geo::`-style
-      nested-name-specifier qualifiers unvisited since clang 22 dropped
-      `ElaboratedType`.
+- [x] **Semantic-token cosmetic gaps** (2026-07-17). Written `auto`
+      placeholders now emit native `type` tokens, and a custom
+      `TraverseNestedNameSpecifierLoc` emits every namespace component in
+      qualified types such as `outer::inner::Value`. This closes the final
+      three identifier-position gaps from B-24 against clangd 22. Freight's
+      intentionally shared native legend has no token modifiers, so clangd's
+      additional `deduced` modifier remains outside this token-position/type
+      parity point. Regressions cover both nested qualifiers and the original
+      `test.cpp` oracle positions.
 - [x] **Q-4: call hierarchy on lambdas** (2026-07-17) — hierarchy preparation
       maps lambda-typed variables and their invocation references to the
       closure's `operator()` USR while preserving the variable's user-facing
