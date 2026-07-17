@@ -7,9 +7,11 @@ pub struct InlayHint {
     pub line: u32,
     /// 1-based column.
     pub col: u32,
-    /// Display text — e.g. `"x:"` for a parameter hint, `": int"` for a type hint.
+    /// Display text — e.g. `"x:"` for a parameter hint, `": int"` for a type hint,
+    /// or `".field="` for an aggregate designator hint.
     pub label: String,
-    /// `0` = parameter name, `1` = deduced type (`auto` variable).
+    /// `0` = parameter name, `1` = deduced type, `2` = block end,
+    /// `3` = aggregate designator.
     pub kind: u8,
 }
 
@@ -56,8 +58,8 @@ impl Drop for InlayHintList {
 
 /// Collect inlay hints for lines `[start_line, end_line]` (1-based, inclusive).
 ///
-/// Returns parameter-name hints at call sites and deduced-type hints for
-/// `auto`-declared variables.
+/// Returns parameter-name, deduced-type, block-end, and aggregate-designator
+/// hints.
 pub fn inlay_hints(
     tu: &crate::TranslationUnit,
     start_line: u32,

@@ -120,3 +120,60 @@ fn no_block_end_hint_for_short_function() {
         "expected no block-end hint for short function, got: {block_end_hints:?}"
     );
 }
+
+#[test]
+fn aggregate_designators_cover_records_arrays_and_comments() {
+    let src = r#"struct Point { int x; int y; };
+int x = 7;
+Point point{x, 2};
+Point commented{/*x=*/ 3, 4};
+Point explicit_fields{.x = 5, .y = 6};
+int values[]{8, 9};"#;
+    let path = write_temp("cb_inlay_designators.cpp", src);
+    let idx = Index::new();
+    let tu = idx.parse(path.to_str().unwrap(), "", &["-std=c++20"]).unwrap();
+
+    let hints = inlay::inlay_hints(&tu, 1, 6);
+    let designators: Vec<_> = hints.iter().filter(|h| h.kind == 3).collect();
+    let labels: Vec<_> = designators.iter().map(|h| h.label.as_str()).collect();
+    assert_eq!(
+        labels,
+        vec![".x=", ".y=", ".y=", "[0]=", "[1]="],
+        "unexpected aggregate designator hints: {designators:?}"
+    );
+}
+
+#[test]
+fn aggregate_designators_follow_bases_and_brace_elision() {
+    let src = r#"struct Base { int base; };
+struct Pair { int left; int right; };
+struct Derived : Base { Pair pair; int tail; };
+Derived value{{1}, 2, 3, 4};"#;
+    let path = write_temp("cb_inlay_nested_designators.cpp", src);
+    let idx = Index::new();
+    let tu = idx.parse(path.to_str().unwrap(), "", &["-std=c++17"]).unwrap();
+
+    let hints = inlay::inlay_hints(&tu, 1, 4);
+    let labels: Vec<_> = hints
+        .iter()
+        .filter(|h| h.kind == 3)
+        .map(|h| h.label)
+        .collect();
+    assert_eq!(labels, vec![".base=", ".pair.left=", ".pair.right=", ".tail="]);
+}
+
+#[test]
+fn aggregate_designators_support_cxx20_parenthesized_initialization() {
+    let src = "struct Point { int x; int y; };\nPoint point(1, 2);";
+    let path = write_temp("cb_inlay_paren_designators.cpp", src);
+    let idx = Index::new();
+    let tu = idx.parse(path.to_str().unwrap(), "", &["-std=c++20"]).unwrap();
+
+    let hints = inlay::inlay_hints(&tu, 1, 2);
+    let labels: Vec<_> = hints
+        .iter()
+        .filter(|h| h.kind == 3)
+        .map(|h| h.label)
+        .collect();
+    assert_eq!(labels, vec![".x=", ".y="]);
+}

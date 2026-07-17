@@ -345,15 +345,15 @@ void           cb_rename_list_destroy(CB_RenameList *list);
 typedef struct {
     uint32_t    line;   // 1-based; hint appears before this position
     uint32_t    col;    // 1-based
-    const char *label;  // e.g. "x:" for a parameter hint, ": int" for a type hint
+    const char *label;  // e.g. "x:", ": int", or ".field="
     uint8_t     kind;   // 0 = parameter name, 1 = deduced type,
-                        // 2 = block-end label (e.g. "} // fn"), 3 = designator (.field =)
+                        // 2 = block-end label (e.g. "} // fn"), 3 = designator (.field=)
 } CB_InlayHint;
 
 typedef struct CB_InlayHintList CB_InlayHintList;
 
 /// Collect inlay hints for all lines in [start_line, end_line] (1-based, inclusive).
-/// Covers parameter-name hints at call sites and deduced-type hints for `auto` vars.
+/// Covers parameter-name, deduced-type, block-end, and aggregate-designator hints.
 /// Caller must free with cb_inlay_hint_list_destroy().
 CB_InlayHintList *cb_inlay_hints(CB_TransUnit *tu,
                                   uint32_t start_line, uint32_t end_line);

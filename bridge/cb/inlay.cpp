@@ -101,6 +101,108 @@ public:
         return fname.drop_front(3).ltrim("_").equals_insensitive(pname);
     }
 
+    static bool isReservedFieldName(StringRef name) {
+        if (name.size() < 2 || name.front() != '_') return false;
+        unsigned char second = static_cast<unsigned char>(name[1]);
+        return name[1] == '_' || (second >= 'A' && second <= 'Z');
+    }
+
+    // Append the designator for direct subobject `index` of `type`. Semantic
+    // InitListExpr entries are ordered as bases followed by fields (or array
+    // elements), so this also keeps brace-elided nested aggregates aligned.
+    static bool appendAggregateDesignator(QualType type, unsigned index,
+                                          bool forSubobject,
+                                          std::string &label) {
+        if (type.isNull()) return false;
+        type = type.getCanonicalType();
+        if (type->isArrayType()) {
+            label += "[" + std::to_string(index) + "]";
+            return true;
+        }
+
+        const RecordDecl *record = type->getAsRecordDecl();
+        if (!record) return false;
+        unsigned baseCount = 0;
+        if (const auto *cxxRecord = dyn_cast<CXXRecordDecl>(record)) {
+            if (!cxxRecord->isAggregate()) return false;
+            baseCount = cxxRecord->getNumBases();
+        }
+        if (index < baseCount) return false;
+
+        unsigned fieldIndex = index - baseCount;
+        auto field = record->field_begin();
+        for (unsigned i = 0; i < fieldIndex && field != record->field_end(); ++i)
+            ++field;
+        if (field == record->field_end()) return false;
+
+        StringRef name = field->getName();
+        bool oneField = record->field_begin() != record->field_end() &&
+                        std::next(record->field_begin()) == record->field_end();
+        // Anonymous subobjects and std::array-like wrappers expose their
+        // children directly when braces are elided.
+        if (forSubobject &&
+            (field->isAnonymousStructOrUnion() ||
+             (oneField && isReservedFieldName(name))))
+            return true;
+        if (name.empty() || isReservedFieldName(name)) return false;
+        label += "." + name.str();
+        return true;
+    }
+
+    static bool hasWrittenBraces(const InitListExpr *init,
+                                 const SourceManager &sourceManager) {
+        SourceLocation brace = sourceManager.getFileLoc(init->getLBraceLoc());
+        if (brace.isInvalid()) return false;
+        bool invalid = false;
+        const char *text = sourceManager.getCharacterData(brace, &invalid);
+        return !invalid && text && *text == '{';
+    }
+
+    static void collectUnwrittenDesignators(
+        const InitListExpr *semantic,
+        std::unordered_map<unsigned, std::string> &designators,
+        std::string &prefix, const SourceManager &sourceManager) {
+        if (!semantic || semantic->isTransparent()) return;
+        unsigned index = 0;
+        for (const Expr *init : semantic->inits()) {
+            size_t prefixSize = prefix.size();
+            if (init && !isa<ImplicitValueInitExpr>(init)) {
+                const auto *subobject = dyn_cast<InitListExpr>(init);
+                // Clang 22 may assign valid brace locations to semantic lists
+                // created for brace elision. Check the actual source byte
+                // instead of relying on InitListExpr::isExplicit().
+                if (subobject && hasWrittenBraces(subobject, sourceManager))
+                    subobject = nullptr;
+                if (appendAggregateDesignator(semantic->getType(), index,
+                                              subobject != nullptr, prefix)) {
+                    if (subobject) {
+                        collectUnwrittenDesignators(subobject, designators, prefix,
+                                                   sourceManager);
+                    } else if (!prefix.empty()) {
+                        designators.try_emplace(init->getBeginLoc().getRawEncoding(),
+                                                prefix);
+                    }
+                }
+            }
+            prefix.resize(prefixSize);
+            ++index;
+        }
+    }
+
+    void addDesignatorHint(const Expr *init, StringRef label) {
+        if (label.empty() || isPrecededByParamNameComment(init, label)) return;
+        SourceLocation loc = SM.getFileLoc(init->getBeginLoc());
+        if (!inViewport(loc)) return;
+        auto presumed = SM.getPresumedLoc(loc);
+        if (!presumed.isValid()) return;
+        InlayHintEntry hint;
+        hint.line = presumed.getLine();
+        hint.col = source_location_utf16_col(SM, loc);
+        hint.label = (label + "=").str();
+        hint.kind = 3;
+        hints.push_back(std::move(hint));
+    }
+
     bool inViewport(SourceLocation loc) const {
         // getFileLoc (not getSpellingLoc): for a macro-expanded argument we want
         // the location where the macro is *used* in the call, not where the macro
@@ -204,76 +306,35 @@ public:
     }
 
     // ── Designator hints for aggregate initializer lists (IH-14) ────────────────
-    // For undesignated brace-init-lists, emit `.field =` (record) or `[N]=`
-    // (array) before each element, matching clangd's VisitInitListExpr behaviour.
+    // Recover labels from the semantic form so inherited aggregates and
+    // brace-elided nested subobjects stay aligned with the written expressions.
 
     bool VisitInitListExpr(InitListExpr *ILE) {
         // Process only the syntactic (user-written) form; the semantic form has
         // Clang-synthesised padding/base-class slots that don't map to user text.
         if (!ILE->isSyntacticForm()) return true;
-        unsigned nInits = ILE->getNumInits();
-        if (nInits == 0) return true;
-
-        QualType ILEType = ILE->getType().getCanonicalType();
-
-        // ── Array aggregate: [0]=, [1]=, … ────────────────────────────────────
-        if (ILEType->isArrayType()) {
-            for (unsigned i = 0; i < nInits; ++i) {
-                const Expr *init = ILE->getInit(i);
-                if (isa<DesignatedInitExpr>(init)) continue;
-                SourceLocation loc = SM.getFileLoc(init->getBeginLoc());
-                if (!inViewport(loc)) continue;
-                auto p = SM.getPresumedLoc(loc);
-                if (!p.isValid()) continue;
-                InlayHintEntry h;
-                h.line  = p.getLine();
-                h.col   = source_location_utf16_col(SM, loc);
-                h.label = "[" + std::to_string(i) + "]=";
-                h.kind  = 3;
-                hints.push_back(std::move(h));
-            }
+        if (ILE->getNumInits() == 0 ||
+            ILE->isIdiomaticZeroInitializer(Ctx.getLangOpts()))
             return true;
+
+        std::unordered_map<unsigned, std::string> designators;
+        std::string prefix;
+        collectUnwrittenDesignators(ILE->getSemanticForm(), designators, prefix,
+                                   SM);
+        for (const Expr *init : ILE->inits()) {
+            if (isa<DesignatedInitExpr>(init)) continue;
+            auto found = designators.find(init->getBeginLoc().getRawEncoding());
+            if (found != designators.end()) addDesignatorHint(init, found->second);
         }
+        return true;
+    }
 
-        // ── Record aggregate: .fieldName = … ──────────────────────────────────
-        const RecordDecl *RD = nullptr;
-        if (const auto *RT = ILEType->getAs<RecordType>())
-            RD = RT->getDecl();
-        if (!RD) return true;
-        // Only aggregate class/struct types get designator hints.
-        if (const auto *CRD = dyn_cast<CXXRecordDecl>(RD))
-            if (!CRD->isAggregate()) return true;
-
-        auto field_it = RD->field_begin();
-        for (unsigned i = 0; i < nInits; ++i) {
-            // Advance past anonymous/unnamed bitfields — they're not user-visible.
-            while (field_it != RD->field_end() &&
-                   (field_it->isUnnamedBitField() || field_it->getName().empty()))
-                ++field_it;
-            if (field_it == RD->field_end()) break;
-
-            const Expr *init = ILE->getInit(i);
-            if (isa<DesignatedInitExpr>(init)) { ++field_it; continue; }
-
-            StringRef fieldName = field_it->getName();
-            // Suppress when the init value is spelled the same as the field name,
-            // matching clangd's getSpelledIdentifier-based suppression.
-            if (!fieldName.empty() && getSpelledIdentifier(init) == fieldName) {
-                ++field_it; continue;
-            }
-
-            SourceLocation loc = SM.getFileLoc(init->getBeginLoc());
-            if (!inViewport(loc)) { ++field_it; continue; }
-            auto p = SM.getPresumedLoc(loc);
-            if (!p.isValid()) { ++field_it; continue; }
-
-            InlayHintEntry h;
-            h.line  = p.getLine();
-            h.col   = source_location_utf16_col(SM, loc);
-            h.label = "." + fieldName.str() + " =";
-            h.kind  = 3;
-            hints.push_back(std::move(h));
-            ++field_it;
+    bool VisitCXXParenListInitExpr(CXXParenListInitExpr *E) {
+        const auto &inits = E->getUserSpecifiedInitExprs();
+        for (unsigned i = 0; i < inits.size(); ++i) {
+            std::string label;
+            if (appendAggregateDesignator(E->getType(), i, false, label))
+                addDesignatorHint(inits[i], label);
         }
         return true;
     }

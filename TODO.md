@@ -290,9 +290,13 @@ Beyond the reparse items in §1:
       Index all manifest sources idle-time (freight knows the exact file set —
       no compile_commands guessing like clangd) so rename is truly
       project-wide on first use.
-- [ ] **IH-14: designated-initializer inlay hints** (`.field =`) — the one
-      clangd inlay-hint kind still missing (needs clang-tidy-style machinery
-      or an inline reimplementation).
+- [x] **IH-14: aggregate-designator inlay hints** (2026-07-17) — semantic-form
+      recovery now emits clangd-style `.field=` and `[N]=` labels for records,
+      arrays, inherited aggregates, and brace-elided nested subobjects. It
+      suppresses written designators and matching comments, skips idiomatic
+      zero initializers and non-designatable bases, and supports C++20
+      parenthesized aggregate initialization. Regressions cover all of these
+      mapping boundaries.
 
 ### 5. Test debt (from the audit rounds)
 
