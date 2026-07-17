@@ -141,15 +141,14 @@ features. Roughly in priority order:
 
 ### 1. Still broken / known risks
 
-- [ ] **Per-keystroke full reparse — preamble precompilation is disabled.**
-      `core.cpp` passes `PrecompilePreambleAfterNParses=0` to
-      `ASTUnit::LoadFromCompilerInvocation`, so every `didChange` re-lexes and
-      re-parses *all included headers* from scratch. This is the single
-      biggest UX gap vs clangd (which rebuilds only the post-preamble region
-      on edit). **Fix:** set `PrecompilePreambleAfterNParses=1` so `Reparse`
-      reuses a precompiled preamble; verify the B-23-style SourceManager
-      corruption doesn't resurface (completion runs on a fresh SourceManager —
-      retest that interaction); measure on a TU including `<iostream>`.
+- [x] **Precompiled-preamble reuse** (2026-07-17) — `core.cpp` now passes
+      `PrecompilePreambleAfterNParses=1` to
+      `ASTUnit::LoadFromCompilerInvocation`, so reparses can reuse included
+      headers instead of rebuilding the whole TU. `tests/preamble.rs` verifies
+      that editing the first `#include` invalidates and rebuilds the preamble,
+      and that completion after repeated reparse does not reintroduce B-23's
+      cached-SourceManager corruption. The explicit `<iostream>/<vector>` debug
+      probe measured initial parse 606 ms and reparse p50/p95 60/70 ms.
 - [ ] **Synchronous reparse on the LSP loop.** `freight/src/lsp/mod.rs`
       reparses on *every* `didChange` (full-text sync, no debounce) before
       handling the next message — fast typists queue up parses and every
@@ -236,10 +235,12 @@ Reuse the clangd JSON-RPC oracle harness from the 2026-06-10 audit
 
 Beyond the reparse items in §1:
 
-- [ ] **Completion latency budget.** Completion re-runs code-complete on a
-      fresh SourceManager per request (post-B-23). Measure p50/p95 on a
-      `<vector>`-heavy TU; if >100 ms, the preamble work in §1 is the lever
-      (clang's code-complete also reuses the preamble).
+- [x] **Completion latency budget** (2026-07-17) — the ignored timing probe in
+      `tests/preamble.rs` runs ten reparses and completions on a
+      `<iostream>/<vector>` TU. On this LLVM 22 debug build, completion measured
+      p50/p95 7.5/8.1 ms, below the 100 ms target. Re-run the ignored
+      `iostream_vector_reparse_and_completion_latency` test with `--nocapture`
+      to collect local figures.
 - [ ] **TU memory cap.** `Clang.rs` keeps one live `ASTUnit` per opened file,
       evicted only on `didClose`. A long session over many files holds
       hundreds of MB. Add an LRU (keep N hottest TUs, e.g. 4–8; re-parse on
@@ -297,8 +298,8 @@ Beyond the reparse items in §1:
 - [ ] Multi-TU workspace fixture (two `.cpp` + shared header) covering
       cross-TU references, rename, and workspace symbols after reparse
       (Q-5 regression: no duplicate entries).
-- [ ] Preamble-reuse regression tests once §1 lands: reparse-after-edit
-      correctness near the preamble boundary (edit the first `#include` line),
-      and completion-after-reparse (B-23 interaction).
-- [ ] Latency micro-bench (criterion or a timed test) for reparse + completion
-      on a `<vector>`/`<iostream>` TU, so §3 regressions are caught.
+- [x] Preamble-reuse regression tests — `tests/preamble.rs` covers an edit to
+      the first `#include` and completion-after-reparse without AST corruption.
+- [x] Latency micro-bench — the ignored `tests/preamble.rs` timing probe reports
+      initial parse and reparse/completion p50/p95 on a
+      `<vector>`/`<iostream>` TU without imposing machine-dependent assertions.

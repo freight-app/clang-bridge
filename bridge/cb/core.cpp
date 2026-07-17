@@ -64,7 +64,7 @@ struct CapturingASTBuilder : public ToolAction {
             DiagOpts, Diags, FM,
             /*OnlyLocalDecls=*/false,
             CaptureDiagsKind::All,
-            /*PrecompilePreambleAfterNParses=*/0,
+            /*PrecompilePreambleAfterNParses=*/1,
             TU_Complete,
             /*CacheCodeCompletionResults=*/true,
             /*IncludeBriefCommentsInCodeCompletion=*/true,

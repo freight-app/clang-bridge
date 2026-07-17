@@ -21,29 +21,32 @@ struct CB_InclusionList {
 static void collect_inclusions(ASTUnit *ast,
                                std::vector<InclusionEntry> &out) {
     const SourceManager &SM = ast->getSourceManager();
-    // ASTUnit exposes getLocalTopLevelDecls — for inclusions we iterate all
-    // FileIDs and query for SLocEntry inclusion records.
-    unsigned n = SM.local_sloc_entry_size();
-    for (unsigned i = 1; i < n; ++i) {
-        const SrcMgr::SLocEntry &entry = SM.getLocalSLocEntry(i);
-        if (!entry.isFile()) continue;
+    std::unordered_set<std::string> seen;
+    auto collect = [&](const SrcMgr::SLocEntry &entry) {
+        if (!entry.isFile()) return;
         const SrcMgr::FileInfo &FI = entry.getFile();
-        if (FI.getIncludeLoc().isInvalid()) continue; // main file
+        if (FI.getIncludeLoc().isInvalid()) return; // main file
 
-        // The include location is in the including file.
-        SourceLocation incLoc = FI.getIncludeLoc();
+        // Preamble files live in loaded SLoc entries. Map their include
+        // location back into the current main-file buffer before filtering or
+        // measuring the directive range.
+        SourceLocation incLoc = ast->mapLocationFromPreamble(FI.getIncludeLoc());
         // Only report directives written in the main file: cb_inclusions backs
         // LSP textDocument/documentLink for the open document, so transitive
         // includes pulled in by system headers must not be returned.
-        if (SM.getFileID(incLoc) != SM.getMainFileID()) continue;
+        if (SM.getFileID(incLoc) != SM.getMainFileID()) return;
         auto presumed = SM.getPresumedLoc(incLoc);
-        if (!presumed.isValid()) continue;
+        if (!presumed.isValid()) return;
 
         // Resolve the included filename from the ContentCache.
         const SrcMgr::ContentCache *CC = &FI.getContentCache();
-        if (!CC->OrigEntry) continue;
+        if (!CC->OrigEntry) return;
+        if (CC->OrigEntry == SM.getFileEntryForID(SM.getMainFileID())) return;
         std::string included = CC->OrigEntry->getName().str();
-        if (included.empty()) continue;
+        if (included.empty()) return;
+
+        std::string key = included + ":" + std::to_string(presumed.getLine());
+        if (!seen.insert(key).second) return;
 
         // Find the column range of the path literal ("foo.h" or <foo.h>).
         // Scan the raw source line for the opening delimiter after #include.
@@ -82,6 +85,20 @@ static void collect_inclusions(ASTUnit *ast,
             }
         }
         out.push_back(std::move(e));
+    };
+
+    // Post-preamble files and parses without a PCH use positive/local IDs.
+    unsigned local_count = SM.local_sloc_entry_size();
+    for (unsigned i = 1; i < local_count; ++i)
+        collect(SM.getLocalSLocEntry(i));
+
+    // Once ASTUnit builds a precompiled preamble, its headers use
+    // negative/loaded IDs and disappear from the local table.
+    unsigned loaded_count = SM.loaded_sloc_entry_size();
+    for (unsigned i = 0; i < loaded_count; ++i) {
+        bool invalid = false;
+        const SrcMgr::SLocEntry &entry = SM.getLoadedSLocEntry(i, &invalid);
+        if (!invalid) collect(entry);
     }
 }
 
