@@ -2,6 +2,25 @@
 
 // ── Go-to-definition ──────────────────────────────────────────────────────────
 
+static bool fill_location_range(const SourceManager &SM,
+                                const LangOptions &LangOpts,
+                                SourceLocation begin, SourceLocation end_token,
+                                CB_Location *out) {
+    begin = SM.getFileLoc(begin);
+    end_token = SM.getFileLoc(end_token);
+    SourceLocation end = Lexer::getLocForEndOfToken(end_token, 0, SM, LangOpts);
+    auto start_ploc = SM.getPresumedLoc(begin);
+    auto end_ploc = SM.getPresumedLoc(end);
+    if (!start_ploc.isValid() || !end_ploc.isValid()) return false;
+
+    out->file = strdup(start_ploc.getFilename() ? start_ploc.getFilename() : "");
+    out->line = static_cast<uint32_t>(start_ploc.getLine());
+    out->col = source_location_utf16_col(SM, begin);
+    out->end_line = static_cast<uint32_t>(end_ploc.getLine());
+    out->end_col = source_location_utf16_col(SM, end);
+    return true;
+}
+
 int cb_goto_definition(CB_TransUnit *tu, uint32_t line, uint32_t col,
                        CB_Location *out) {
     ASTContext          &Ctx = tu->ast->getASTContext();
@@ -22,12 +41,9 @@ int cb_goto_definition(CB_TransUnit *tu, uint32_t line, uint32_t col,
         const IdentifierInfo *II = PP.getIdentifierInfo(sp);
         const MacroInfo *MI = II ? PP.getMacroInfo(II) : nullptr;
         if (!MI) return 0;
-        auto mp = SM.getPresumedLoc(MI->getDefinitionLoc());
-        if (!mp.isValid()) return 0;
-        out->file = strdup(mp.getFilename() ? mp.getFilename() : "");
-        out->line = (uint32_t)mp.getLine();
-        out->col  = source_location_utf16_col(SM, MI->getDefinitionLoc());
-        return 1;
+        return fill_location_range(SM, Ctx.getLangOpts(),
+                                   MI->getDefinitionLoc(), MI->getDefinitionLoc(),
+                                   out) ? 1 : 0;
     }
 
     // Prefer the definition over the first declaration.
@@ -37,14 +53,13 @@ int cb_goto_definition(CB_TransUnit *tu, uint32_t line, uint32_t col,
     if (auto *TD = dyn_cast<TagDecl>(ND))
         if (auto *Def = TD->getDefinition()) target = Def;
 
-    auto ploc = tu->ast->getASTContext().getSourceManager()
-                    .getPresumedLoc(target->getLocation());
-    if (!ploc.isValid()) return 0;
-
-    out->file = strdup(ploc.getFilename() ? ploc.getFilename() : "");
-    out->line = (uint32_t)ploc.getLine();
-    out->col  = source_location_utf16_col(SM, target->getLocation());
-    return 1;
+    SourceLocation end_token = target->getLocation();
+    if (const auto *function = dyn_cast<FunctionDecl>(target)) {
+        SourceLocation name_end = function->getNameInfo().getEndLoc();
+        if (name_end.isValid()) end_token = name_end;
+    }
+    return fill_location_range(SM, Ctx.getLangOpts(), target->getLocation(),
+                               end_token, out) ? 1 : 0;
 }
 
 // ── Code completion ───────────────────────────────────────────────────────────

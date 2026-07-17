@@ -21,6 +21,8 @@ pub struct CB_Location {
     pub file: *mut std::ffi::c_char,
     pub line: u32,
     pub col: u32,
+    pub end_line: u32,
+    pub end_col: u32,
 }
 
 #[repr(C)]

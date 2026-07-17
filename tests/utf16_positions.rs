@@ -41,6 +41,10 @@ fn navigation_and_symbol_result_columns_are_utf16() {
 
     let definition = goto::goto_definition(&tu, 2, use_col).expect("definition");
     assert_eq!((definition.line, definition.col), (1, def_col));
+    assert_eq!(
+        (definition.end_line, definition.end_col),
+        (1, def_col + "value".encode_utf16().count() as u32)
+    );
 
     let references: Vec<_> = refs::references(&tu, &usr).iter().collect();
     assert!(references

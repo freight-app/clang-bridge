@@ -38,6 +38,7 @@ fn goto_definition_resolves_function() {
         "expected definition on line 2, got {}",
         loc.line
     );
+    assert_eq!((loc.col, loc.end_line, loc.end_col), (5, 2, 11));
 }
 
 #[test]
@@ -83,4 +84,5 @@ fn goto_definition_on_macro_jumps_to_define() {
     let col = "int a = LIMIT;".find("LIMIT").unwrap() as u32 + 1;
     let loc = goto::goto_definition(&tu, 2, col).expect("goto on macro use");
     assert_eq!(loc.line, 1, "LIMIT is #defined on line 1");
+    assert_eq!((loc.col, loc.end_line, loc.end_col), (9, 1, 14));
 }

@@ -250,9 +250,12 @@ Beyond the reparse items in §1:
       evicted only on `didClose`. A long session over many files holds
       hundreds of MB. Add an LRU (keep N hottest TUs, e.g. 4–8; re-parse on
       revisit) — clangd's `--background-index` + idle-AST limit is the model.
-- [ ] **Goto-definition result range is a zero-width point** (start == end).
-      Editors highlight nothing on landing. Return the full identifier token
-      range (use `Lexer::getLocForEndOfToken`, as document_symbols already does).
+- [x] **Goto-definition returns the full destination token range**
+      (2026-07-17). `CB_Location` now carries an exclusive UTF-16 end position;
+      declarations use the declaration-name token range and macro navigation
+      uses the defined identifier. Freight forwards the range unchanged to
+      LSP. Regressions cover functions, macros, multibyte source lines, and the
+      embedded Freight indexer boundary.
 - [ ] **Progress + status surfacing.** Long first-parses are invisible — the
       editor just shows nothing. Emit `$/progress` (work-done) from freight
       around initial parse / refresh_flags, and a status-bar state

@@ -165,8 +165,10 @@ char *cb_hover_full(CB_TransUnit *tu, uint32_t line, uint32_t col);
 
 typedef struct {
     char     *file;   // heap-allocated; free with cb_free_string()
-    uint32_t  line;   // 1-based
-    uint32_t  col;    // 1-based
+    uint32_t  line;   // range start, 1-based UTF-16
+    uint32_t  col;
+    uint32_t  end_line; // range end, exclusive, 1-based UTF-16
+    uint32_t  end_col;
 } CB_Location;
 
 /// Fills *out and returns 1 if a definition location is found, 0 otherwise.
