@@ -2,7 +2,49 @@
 
 #include <llvm/Support/FileSystem.h>
 
+#include <csignal>
 #include <mutex>
+
+static void enable_crash_recovery() {
+    static std::once_flag once;
+    std::call_once(once, [] { llvm::CrashRecoveryContext::Enable(); });
+}
+
+bool cb_run_safely(CB_Index *idx, const char *operation,
+                   llvm::function_ref<void()> fn) {
+    enable_crash_recovery();
+    llvm::CrashRecoveryContext context;
+    bool ok = context.RunSafely(fn);
+    if (!ok && idx) {
+        idx->last_error = "clang crashed during ";
+        idx->last_error += operation ? operation : "unknown operation";
+    }
+    return ok;
+}
+
+bool cb_run_safely(CB_TransUnit *tu, const char *operation,
+                   llvm::function_ref<void()> fn) {
+    if (!tu || tu->poisoned || !tu->ast)
+        return false;
+    enable_crash_recovery();
+    llvm::CrashRecoveryContext context;
+    bool ok = context.RunSafely(fn);
+    if (!ok) {
+        tu->poisoned = true;
+        tu->last_error = "clang crashed during ";
+        tu->last_error += operation ? operation : "unknown operation";
+        // Crash recovery bypasses C++ destructors. The AST may be partially
+        // mutated, so leaking it is safer than invoking a corrupt destructor.
+        tu->ast.release();
+    }
+    return ok;
+}
+
+bool cb_run_safely(llvm::function_ref<void()> fn) {
+    enable_crash_recovery();
+    llvm::CrashRecoveryContext context;
+    return context.RunSafely(fn);
+}
 
 // getName() asserts when the DeclarationName is not a plain identifier
 // (constructors, destructors, operators, conversion functions).  Use this
@@ -20,6 +62,26 @@ void cb_index_destroy(CB_Index *idx) { delete idx; }
 
 const char *cb_index_last_error(const CB_Index *idx) {
     return idx->last_error.empty() ? nullptr : idx->last_error.c_str();
+}
+
+const char *cb_transunit_last_error(const CB_TransUnit *tu) {
+    return !tu || tu->last_error.empty() ? nullptr : tu->last_error.c_str();
+}
+
+int cb_transunit_is_poisoned(const CB_TransUnit *tu) {
+    return tu && tu->poisoned ? 1 : 0;
+}
+
+int cb_crash_recovery_probe(CB_Index *idx) {
+    return cb_run_safely(idx, "crash recovery probe", [] {
+        std::raise(SIGABRT);
+    }) ? 1 : 0;
+}
+
+int cb_transunit_crash_recovery_probe(CB_TransUnit *tu) {
+    return cb_run_safely(tu, "translation unit crash recovery probe", [] {
+        std::raise(SIGABRT);
+    }) ? 1 : 0;
 }
 
 // ── TransUnit ─────────────────────────────────────────────────────────────────
@@ -80,6 +142,7 @@ struct CapturingASTBuilder : public ToolAction {
 };
 
 static std::unique_ptr<ASTUnit> build_ast_with_diagnostics(
+    CB_Index *idx,
     const char *source_file,
     const char *working_dir,
     const char * const *args,
@@ -89,27 +152,31 @@ static std::unique_ptr<ASTUnit> build_ast_with_diagnostics(
     // command's directory while it runs. Guard setup as well as run() so a
     // second thread cannot construct relative paths while that CWD is active.
     static std::mutex s_clang_tool_mutex;
-    std::lock_guard<std::mutex> lock(s_clang_tool_mutex);
-
-    std::vector<std::string> compile_args(args, args + nargs);
-    const std::string dir = (working_dir && *working_dir) ? working_dir : ".";
-    FixedCompilationDatabase db(dir, compile_args);
-    std::vector<std::string> sources{source_file};
-    ClangTool tool(db, sources);
-    tool.setPrintErrorMessage(false);
-
     static const std::string s_resource_dir = find_clang_resource_dir();
-    if (!s_resource_dir.empty()) {
-        tool.appendArgumentsAdjuster(getInsertArgumentAdjuster(
-            CommandLineArguments{"-resource-dir", s_resource_dir},
-            ArgumentInsertPosition::END));
-    }
+    std::unique_ptr<ASTUnit> result;
+    s_clang_tool_mutex.lock();
+    bool ok = cb_run_safely(idx, "parse", [&] {
+        std::vector<std::string> compile_args(args, args + nargs);
+        const std::string dir = (working_dir && *working_dir) ? working_dir : ".";
+        FixedCompilationDatabase db(dir, compile_args);
+        std::vector<std::string> sources{source_file};
+        ClangTool tool(db, sources);
+        tool.setPrintErrorMessage(false);
 
-    std::vector<std::unique_ptr<ASTUnit>> asts;
-    CapturingASTBuilder builder(asts);
-    tool.run(&builder);
-    if (asts.empty()) return nullptr;
-    return std::move(asts[0]);
+        if (!s_resource_dir.empty()) {
+            tool.appendArgumentsAdjuster(getInsertArgumentAdjuster(
+                CommandLineArguments{"-resource-dir", s_resource_dir},
+                ArgumentInsertPosition::END));
+        }
+
+        std::vector<std::unique_ptr<ASTUnit>> asts;
+        CapturingASTBuilder builder(asts);
+        tool.run(&builder);
+        if (!asts.empty()) result = std::move(asts[0]);
+    });
+    s_clang_tool_mutex.unlock();
+    if (!ok) return nullptr;
+    return result;
 }
 
 CB_TransUnit *cb_parse(
@@ -119,9 +186,11 @@ CB_TransUnit *cb_parse(
     const char * const *args,
     size_t nargs
 ) {
-    auto ast = build_ast_with_diagnostics(source_file, working_dir, args, nargs);
+    if (idx) idx->last_error.clear();
+    auto ast = build_ast_with_diagnostics(idx, source_file, working_dir, args, nargs);
     if (!ast) {
-        if (idx) idx->last_error = "failed to build AST for: " + std::string(source_file);
+        if (idx && idx->last_error.empty())
+            idx->last_error = "failed to build AST for: " + std::string(source_file);
         return nullptr;
     }
     auto *tu = new CB_TransUnit{};
@@ -144,6 +213,7 @@ CB_TransUnit *cb_parse_unsaved(
     const char * const *args,
     size_t      nargs
 ) {
+    if (idx) idx->last_error.clear();
     // Atomically create a unique temp file while preserving the extension so
     // Clang can infer the language (e.g. .cpp → C++, .c → C). A hash of the
     // virtual path is insufficient because editors can parse the same URI
@@ -174,12 +244,12 @@ CB_TransUnit *cb_parse_unsaved(
     }
 
     const std::string dir = (working_dir && *working_dir) ? working_dir : ".";
-    auto ast = build_ast_with_diagnostics(tmp_path.c_str(), dir.c_str(), args, nargs);
+    auto ast = build_ast_with_diagnostics(idx, tmp_path.c_str(), dir.c_str(), args, nargs);
     llvm::sys::fs::remove(tmp_path);
 
     if (!ast) {
-        if (idx) idx->last_error =
-            "failed to build AST for: " + std::string(virtual_path);
+        if (idx && idx->last_error.empty())
+            idx->last_error = "failed to build AST for: " + std::string(virtual_path);
         return nullptr;
     }
     auto *tu = new CB_TransUnit{};
@@ -263,18 +333,20 @@ void cb_free_string(char *s) { free(s); }
 // ── Reparse ───────────────────────────────────────────────────────────────────
 
 int cb_transunit_reparse(CB_TransUnit *tu, const char *buf, size_t len) {
-    std::vector<ASTUnit::RemappedFile> remapped;
-    if (buf && len > 0) {
-        StringRef main = tu->ast->getMainFileName();
-        // ASTUnit::OwnsRemappedFileBuffers = true by default: Reparse takes
-        // ownership of the MemoryBuffer* and will delete it.  Release from
-        // the unique_ptr to transfer ownership and avoid a double-free.
-        auto *mb = llvm::MemoryBuffer::getMemBufferCopy(
-            StringRef(buf, len), main).release();
-        remapped.emplace_back(main.str(), mb);
-    }
-    return tu->ast->Reparse(std::make_shared<PCHContainerOperations>(),
-                            remapped) ? 0 : 1;
+    return cb_recover(tu, __func__, 0, [&]() -> int {
+        std::vector<ASTUnit::RemappedFile> remapped;
+        if (buf && len > 0) {
+            StringRef main = tu->ast->getMainFileName();
+            // ASTUnit::OwnsRemappedFileBuffers = true by default: Reparse takes
+            // ownership of the MemoryBuffer* and will delete it.  Release from
+            // the unique_ptr to transfer ownership and avoid a double-free.
+            auto *mb = llvm::MemoryBuffer::getMemBufferCopy(
+                StringRef(buf, len), main).release();
+            remapped.emplace_back(main.str(), mb);
+        }
+        return tu->ast->Reparse(std::make_shared<PCHContainerOperations>(),
+                                remapped) ? 0 : 1;
+    });
 }
 
 // ── Hover markdown ────────────────────────────────────────────────────────────

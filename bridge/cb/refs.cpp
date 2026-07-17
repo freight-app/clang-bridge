@@ -61,6 +61,8 @@ public:
 };
 
 CB_ReferenceList *cb_references(CB_TransUnit *tu, const char *usr) {
+    return cb_recover(tu, __func__, static_cast<CB_ReferenceList *>(nullptr),
+                      [&]() -> CB_ReferenceList * {
     auto *list = new CB_ReferenceList{};
     if (!usr || !*usr) return list;
 
@@ -74,10 +76,11 @@ CB_ReferenceList *cb_references(CB_TransUnit *tu, const char *usr) {
 
     index::indexASTUnit(*tu->ast, consumer, opts);
     return list;
+    });
 }
 
 size_t cb_reference_count(const CB_ReferenceList *list) {
-    return list->refs.size();
+    return list ? list->refs.size() : 0;
 }
 
 void cb_reference_get(const CB_ReferenceList *list, size_t i,
@@ -114,6 +117,8 @@ struct CB_RenameList {
 /// is detected.
 CB_RenameList *cb_rename(CB_TransUnit *tu, const char *usr,
                           const char *new_name) {
+    return cb_recover(tu, __func__, static_cast<CB_RenameList *>(nullptr),
+                      [&]() -> CB_RenameList * {
     auto *list = new CB_RenameList{};
     if (!usr || !*usr || !new_name || !*new_name) return list;
 
@@ -182,10 +187,11 @@ CB_RenameList *cb_rename(CB_TransUnit *tu, const char *usr,
         list->edits.push_back(std::move(e));
     }
     return list;
+    });
 }
 
 size_t cb_rename_edit_count(const CB_RenameList *list) {
-    return list->edits.size();
+    return list ? list->edits.size() : 0;
 }
 
 void cb_rename_edit_get(const CB_RenameList *list, size_t i,
@@ -200,11 +206,11 @@ void cb_rename_edit_get(const CB_RenameList *list, size_t i,
 }
 
 int cb_rename_has_conflict(const CB_RenameList *list) {
-    return list->conflict_msg.empty() ? 0 : 1;
+    return list && !list->conflict_msg.empty() ? 1 : 0;
 }
 
 const char *cb_rename_conflict_message(const CB_RenameList *list) {
-    return list->conflict_msg.empty() ? nullptr : list->conflict_msg.c_str();
+    return !list || list->conflict_msg.empty() ? nullptr : list->conflict_msg.c_str();
 }
 
 void cb_rename_list_destroy(CB_RenameList *list) { delete list; }
@@ -266,12 +272,14 @@ public:
 };
 
 CB_HighlightList *cb_highlight(CB_TransUnit *tu, uint32_t line, uint32_t col) {
+    return cb_recover(tu, __func__, static_cast<CB_HighlightList *>(nullptr),
+                      [&]() -> CB_HighlightList * {
     auto *list = new CB_HighlightList{};
-    CB_Symbol *sym = cb_symbol_at(tu, line, col);
-    if (!sym) return list;
-    std::string usr(cb_symbol_usr(sym));
-    cb_symbol_destroy(sym);
-    if (usr.empty()) return list;
+    const NamedDecl *symbol = locate_symbol_at(tu->ast.get(), line, col);
+    if (!symbol) return list;
+    SmallString<128> usr_buffer;
+    if (index::generateUSRForDecl(symbol, usr_buffer)) return list;
+    std::string usr = usr_buffer.str().str();
 
     ASTContext    &Ctx     = tu->ast->getASTContext();
     SourceManager &SM      = Ctx.getSourceManager();
@@ -282,9 +290,12 @@ CB_HighlightList *cb_highlight(CB_TransUnit *tu, uint32_t line, uint32_t col) {
     opts.IndexFunctionLocals = true;
     index::indexASTUnit(*tu->ast, consumer, opts);
     return list;
+    });
 }
 
-size_t cb_highlight_count(const CB_HighlightList *list) { return list->entries.size(); }
+size_t cb_highlight_count(const CB_HighlightList *list) {
+    return list ? list->entries.size() : 0;
+}
 
 void cb_highlight_get(const CB_HighlightList *list, size_t i, CB_HighlightEntry *out) {
     const auto &e = list->entries[i];

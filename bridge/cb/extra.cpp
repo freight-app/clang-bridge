@@ -12,6 +12,8 @@ struct CB_CodeActionList {
 };
 
 CB_CodeActionList *cb_code_actions(CB_TransUnit *tu, uint32_t line, uint32_t /*col*/) {
+    return cb_recover(tu, __func__, static_cast<CB_CodeActionList *>(nullptr),
+                      [&]() -> CB_CodeActionList * {
     auto *list = new CB_CodeActionList{};
     const SourceManager &SM = tu->ast->getSourceManager();
     for (auto it = tu->ast->stored_diag_begin();
@@ -39,9 +41,10 @@ CB_CodeActionList *cb_code_actions(CB_TransUnit *tu, uint32_t line, uint32_t /*c
         }
     }
     return list;
+    });
 }
 size_t cb_code_action_count(const CB_CodeActionList *list) {
-    return list->actions.size();
+    return list ? list->actions.size() : 0;
 }
 void cb_code_action_get(const CB_CodeActionList *list, size_t i,
                         CB_CodeAction *out) {
@@ -61,6 +64,7 @@ void cb_code_action_list_destroy(CB_CodeActionList *list) { delete list; }
 // ── Macro expansion ───────────────────────────────────────────────────────────
 
 char *cb_expand_macro(CB_TransUnit *tu, uint32_t line, uint32_t col) {
+    return cb_recover(tu, __func__, static_cast<char *>(nullptr), [&]() -> char * {
     ASTContext          &Ctx = tu->ast->getASTContext();
     const SourceManager &SM  = Ctx.getSourceManager();
     const LangOptions   &LO  = Ctx.getLangOpts();
@@ -136,11 +140,13 @@ char *cb_expand_macro(CB_TransUnit *tu, uint32_t line, uint32_t col) {
         out += "\n→ " + expanded;
 
     return strdup(out.c_str());
+    });
 }
 
 // ── AST dump ──────────────────────────────────────────────────────────────────
 
 char *cb_ast_dump(CB_TransUnit *tu, uint32_t start_line, uint32_t end_line) {
+    return cb_recover(tu, __func__, static_cast<char *>(nullptr), [&]() -> char * {
     ASTContext    &Ctx = tu->ast->getASTContext();
     SourceManager &SM  = Ctx.getSourceManager();
     FileID         fid = SM.getMainFileID();
@@ -214,4 +220,5 @@ char *cb_ast_dump(CB_TransUnit *tu, uint32_t start_line, uint32_t end_line) {
     }
     json += "]";
     return strdup(json.c_str());
+    });
 }

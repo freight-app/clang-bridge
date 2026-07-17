@@ -102,6 +102,8 @@ struct CB_CompletionIter {
 CB_CompletionIter *cb_complete(CB_TransUnit *tu,
                                 uint32_t line, uint32_t col,
                                 const char *unsaved_buf, size_t unsaved_len) {
+    return cb_recover(tu, __func__, static_cast<CB_CompletionIter *>(nullptr),
+                      [&]() -> CB_CompletionIter * {
     auto *it = new CB_CompletionIter{};
 
     auto consumer = std::make_unique<BridgeCodeCompleteConsumer>();
@@ -148,9 +150,11 @@ CB_CompletionIter *cb_complete(CB_TransUnit *tu,
 
     it->entries = std::move(consumerPtr->results);
     return it;
+    });
 }
 
 int cb_completion_next(CB_CompletionIter *it, CB_CompletionItem *out) {
+    if (!it || !out) return 0;
     if (it->pos >= it->entries.size()) return 0;
     it->current = it->entries[it->pos++];
     out->label         = it->current.label.c_str();
@@ -234,6 +238,8 @@ public:
 };
 
 CB_SigHelp *cb_signature_help(CB_TransUnit *tu, uint32_t line, uint32_t col) {
+    return cb_recover(tu, __func__, static_cast<CB_SigHelp *>(nullptr),
+                      [&]() -> CB_SigHelp * {
     auto consumer = std::make_unique<BridgeSigHelpConsumer>();
     auto *cp = consumer.get();
 
@@ -275,6 +281,7 @@ CB_SigHelp *cb_signature_help(CB_TransUnit *tu, uint32_t line, uint32_t col) {
     sh->active_param = cp->active_param;
     sh->overloads    = std::move(cp->overloads);
     return sh;
+    });
 }
 
 uint32_t cb_sig_help_active_param(const CB_SigHelp *sh) {

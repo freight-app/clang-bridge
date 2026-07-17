@@ -42,7 +42,8 @@ public:
 };
 
 void cb_workspace_index_add(CB_Index *idx, CB_TransUnit *tu) {
-    if (!idx || !tu) return;
+    if (!idx || idx->poisoned || !tu) return;
+    bool ok = cb_run_safely(tu, __func__, [&] {
     // Remove stale entries for this file so reparse doesn't create duplicates.
     {
         std::string main_path = tu->ast->getMainFileName().str();
@@ -57,6 +58,12 @@ void cb_workspace_index_add(CB_Index *idx, CB_TransUnit *tu) {
     }
     WorkspaceIndexer wi(idx, tu->ast->getASTContext());
     wi.TraverseDecl(tu->ast->getASTContext().getTranslationUnitDecl());
+    });
+    if (!ok) {
+        idx->poisoned = true;
+        idx->last_error = "workspace index disabled after clang crashed during ";
+        idx->last_error += __func__;
+    }
 }
 
 struct CB_WorkspaceSymList {
@@ -65,8 +72,12 @@ struct CB_WorkspaceSymList {
 };
 
 CB_WorkspaceSymList *cb_workspace_symbols(CB_Index *idx, const char *query) {
+    if (!idx || idx->poisoned) return nullptr;
+    idx->last_error.clear();
+    auto *result = cb_recover(
+        idx, __func__, static_cast<CB_WorkspaceSymList *>(nullptr),
+        [&]() -> CB_WorkspaceSymList * {
     auto *list = new CB_WorkspaceSymList{};
-    if (!idx) return list;
     const bool empty_query = (!query || !*query);
     std::string q(query ? query : "");
     std::transform(q.begin(), q.end(), q.begin(), ::tolower);
@@ -89,9 +100,12 @@ CB_WorkspaceSymList *cb_workspace_symbols(CB_Index *idx, const char *query) {
                   });
     }
     return list;
+    });
+    if (!result && !idx->last_error.empty()) idx->poisoned = true;
+    return result;
 }
 size_t cb_workspace_sym_count(const CB_WorkspaceSymList *list) {
-    return list->results.size();
+    return list ? list->results.size() : 0;
 }
 void cb_workspace_sym_get(const CB_WorkspaceSymList *list, size_t i,
                           CB_WorkspaceSym *out) {

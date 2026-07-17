@@ -77,15 +77,18 @@ struct CB_DocIter {
 };
 
 CB_DocIter *cb_doc_extract(CB_TransUnit *tu) {
-    auto *it = new CB_DocIter{};
-    ASTContext &Ctx = tu->ast->getASTContext();
-    DocVisitor V(Ctx);
-    V.TraverseDecl(Ctx.getTranslationUnitDecl());
-    it->entries = std::move(V.entries);
-    return it;
+    return cb_recover(tu, __func__, static_cast<CB_DocIter *>(nullptr), [&]() -> CB_DocIter * {
+        auto *it = new CB_DocIter{};
+        ASTContext &Ctx = tu->ast->getASTContext();
+        DocVisitor V(Ctx);
+        V.TraverseDecl(Ctx.getTranslationUnitDecl());
+        it->entries = std::move(V.entries);
+        return it;
+    });
 }
 
 int cb_doc_iter_next(CB_DocIter *it, CB_DocItem *out) {
+    if (!it || !out) return 0;
     if (it->pos >= it->entries.size()) return 0;
     it->current = it->entries[it->pos++];
     out->kind         = it->current.kind.c_str();
@@ -315,15 +318,17 @@ public:
 };
 
 CB_DocSymList *cb_document_symbols(CB_TransUnit *tu) {
-    auto *list = new CB_DocSymList{};
-    ASTContext &Ctx = tu->ast->getASTContext();
-    DocSymVisitor V(Ctx, list->entries);
-    V.TraverseDecl(Ctx.getTranslationUnitDecl());
-    return list;
+    return cb_recover(tu, __func__, static_cast<CB_DocSymList *>(nullptr), [&]() -> CB_DocSymList * {
+        auto *list = new CB_DocSymList{};
+        ASTContext &Ctx = tu->ast->getASTContext();
+        DocSymVisitor V(Ctx, list->entries);
+        V.TraverseDecl(Ctx.getTranslationUnitDecl());
+        return list;
+    });
 }
 
 size_t cb_doc_sym_count(const CB_DocSymList *list) {
-    return list->entries.size();
+    return list ? list->entries.size() : 0;
 }
 
 void cb_doc_sym_get(const CB_DocSymList *list, size_t i, CB_DocSym *out) {
@@ -342,5 +347,3 @@ void cb_doc_sym_get(const CB_DocSymList *list, size_t i, CB_DocSym *out) {
 }
 
 void cb_doc_sym_list_destroy(CB_DocSymList *list) { delete list; }
-
-

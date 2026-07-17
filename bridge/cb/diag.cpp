@@ -71,6 +71,7 @@ static SourceLocation main_file_include_anchor(ASTUnit *ast,
 }
 
 CB_DiagIter *cb_diag_iter(CB_TransUnit *tu) {
+    return cb_recover(tu, __func__, static_cast<CB_DiagIter *>(nullptr), [&]() -> CB_DiagIter * {
     auto *it = new CB_DiagIter{};
     const SourceManager &SM = tu->ast->getSourceManager();
     for (auto it2 = tu->ast->stored_diag_begin();
@@ -135,9 +136,11 @@ CB_DiagIter *cb_diag_iter(CB_TransUnit *tu) {
         it->entries.push_back(std::move(e));
     }
     return it;
+    });
 }
 
 int cb_diag_next(CB_DiagIter *it, CB_Diag *out) {
+    if (!it || !out) return 0;
     if (it->pos >= it->entries.size()) return 0;
     it->current = it->entries[it->pos++];
     out->file       = it->current.file.c_str();
@@ -158,7 +161,7 @@ int cb_diag_next(CB_DiagIter *it, CB_Diag *out) {
 
 // Fix-it access — valid immediately after cb_diag_next returns 1.
 size_t cb_diag_fixit_count(const CB_DiagIter *it) {
-    return it->current.fixits.size();
+    return it ? it->current.fixits.size() : 0;
 }
 
 void cb_diag_fixit_get(const CB_DiagIter *it, size_t i, CB_FixIt *out) {

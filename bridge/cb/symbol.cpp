@@ -294,6 +294,7 @@ const NamedDecl *locate_symbol_at(ASTUnit *ast, uint32_t line, uint32_t col) {
 }
 
 CB_Symbol *cb_symbol_at(CB_TransUnit *tu, uint32_t line, uint32_t col) {
+    return cb_recover(tu, __func__, static_cast<CB_Symbol *>(nullptr), [&]() -> CB_Symbol * {
     const NamedDecl *ND = locate_symbol_at(tu->ast.get(), line, col);
     if (!ND) return nullptr;
     ASTContext &Ctx = tu->ast->getASTContext();
@@ -330,6 +331,7 @@ CB_Symbol *cb_symbol_at(CB_TransUnit *tu, uint32_t line, uint32_t col) {
     }
 
     return sym;
+    });
 }
 
 const char *cb_symbol_name(const CB_Symbol *s)      { return s->name.c_str(); }

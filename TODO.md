@@ -170,14 +170,18 @@ features. Roughly in priority order:
       projects with conflicting relative `config.hpp` files and synchronized
       unsaved parses sharing one virtual path, then verifies every TU remains
       isolated.
-- [ ] **In-process crash = whole-server crash.** A clang assertion or
-      segfault on malformed input takes down `freight lsp` *for all
-      languages* — clangd being a subprocess means an editor only loses one
-      server. **Fix:** decide a containment strategy before default-on:
-      (a) catch fatal LLVM errors via `llvm::install_fatal_error_handler` +
-      longjmp-free unwind to an error return, (b) optional out-of-process
-      bridge mode for hardening, or at minimum (c) crash-telemetry +
-      auto-restart guidance in the freight LSP supervisor.
+- [x] **In-process crash containment** (2026-07-17). Every C++ operation that
+      parses, mutates, or traverses clang state now runs inside LLVM's
+      `CrashRecoveryContext`, so supported fatal signals and assertions return
+      across the C ABI as a failed/empty result instead of terminating
+      `freight lsp`. A failed TU is quarantined, its potentially corrupt AST is
+      intentionally leaked rather than destroyed, and later calls short-circuit.
+      The Freight indexer logs the captured operation, evicts the poisoned TU,
+      and rebuilds it from the latest live buffer on the next request. Null-safe
+      C result accessors and real `SIGABRT` injection tests cover both index and
+      TU boundaries, including post-crash queries. This is LLVM's documented
+      best-effort in-process containment; an optional subprocess hardening mode
+      remains possible but is no longer a default-on blocker.
 - [x] **UTF-16 position encoding** (2026-07-17) — LSP columns are UTF-16 code
       units, while clang emits/consumes byte columns. Shared helpers in
       `symbol.cpp` now handle both boundaries: `utf16_to_byte_col` and

@@ -103,13 +103,16 @@ static void collect_inclusions(ASTUnit *ast,
 }
 
 CB_InclusionList *cb_inclusions(CB_TransUnit *tu) {
+    return cb_recover(tu, __func__, static_cast<CB_InclusionList *>(nullptr),
+                      [&]() -> CB_InclusionList * {
     auto *list = new CB_InclusionList{};
     collect_inclusions(tu->ast.get(), list->entries);
     return list;
+    });
 }
 
 size_t cb_inclusion_count(const CB_InclusionList *list) {
-    return list->entries.size();
+    return list ? list->entries.size() : 0;
 }
 
 void cb_inclusion_get(const CB_InclusionList *list, size_t i,
@@ -250,6 +253,8 @@ public:
 };
 
 CB_SemanticTokenList *cb_semantic_tokens(CB_TransUnit *tu) {
+    return cb_recover(tu, __func__, static_cast<CB_SemanticTokenList *>(nullptr),
+                      [&]() -> CB_SemanticTokenList * {
     auto *list = new CB_SemanticTokenList{};
     ASTContext &Ctx = tu->ast->getASTContext();
 
@@ -327,10 +332,11 @@ CB_SemanticTokenList *cb_semantic_tokens(CB_TransUnit *tu) {
                     }),
         list->tokens.end());
     return list;
+    });
 }
 
 size_t cb_semantic_token_count(const CB_SemanticTokenList *list) {
-    return list->tokens.size();
+    return list ? list->tokens.size() : 0;
 }
 
 void cb_semantic_token_get(const CB_SemanticTokenList *list, size_t i,
@@ -361,6 +367,8 @@ struct CB_FormatList {
 
 CB_FormatList *cb_format(const char *source, size_t len,
                           const char *style_dir) {
+    return cb_recover(static_cast<CB_FormatList *>(nullptr),
+                      [&]() -> CB_FormatList * {
     using namespace clang::format;
     StringRef code(source, len);
 
@@ -385,10 +393,11 @@ CB_FormatList *cb_format(const char *source, size_t len,
         list->edits.push_back(std::move(e));
     }
     return list;
+    });
 }
 
 size_t cb_format_edit_count(const CB_FormatList *list) {
-    return list->edits.size();
+    return list ? list->edits.size() : 0;
 }
 
 void cb_format_edit_get(const CB_FormatList *list, size_t i, CB_FormatEdit *out) {
@@ -456,6 +465,8 @@ public:
 };
 
 CB_FoldingRangeList *cb_folding_ranges(CB_TransUnit *tu) {
+    return cb_recover(tu, __func__, static_cast<CB_FoldingRangeList *>(nullptr),
+                      [&]() -> CB_FoldingRangeList * {
     auto *list = new CB_FoldingRangeList{};
     ASTContext    &Ctx     = tu->ast->getASTContext();
     SourceManager &SM      = Ctx.getSourceManager();
@@ -520,10 +531,11 @@ CB_FoldingRangeList *cb_folding_ranges(CB_TransUnit *tu) {
                                a.end_line == b.end_line; }),
         list->entries.end());
     return list;
+    });
 }
 
 size_t cb_folding_range_count(const CB_FoldingRangeList *list) {
-    return list->entries.size();
+    return list ? list->entries.size() : 0;
 }
 void cb_folding_range_get(const CB_FoldingRangeList *list, size_t i,
                           CB_FoldingRange *out) {

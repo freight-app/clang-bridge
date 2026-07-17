@@ -333,6 +333,10 @@ extern "C" {
 
     // Parse error
     pub fn cb_index_last_error(idx: *const CB_Index) -> *const c_char;
+    pub fn cb_transunit_last_error(tu: *const CB_TransUnit) -> *const c_char;
+    pub fn cb_transunit_is_poisoned(tu: *const CB_TransUnit) -> i32;
+    pub fn cb_crash_recovery_probe(idx: *mut CB_Index) -> i32;
+    pub fn cb_transunit_crash_recovery_probe(tu: *mut CB_TransUnit) -> i32;
 
     // Parse from memory
     pub fn cb_parse_unsaved(

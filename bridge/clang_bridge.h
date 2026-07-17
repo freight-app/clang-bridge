@@ -201,6 +201,12 @@ void        cb_sig_help_destroy(CB_SigHelp *sh);
 /// cb_parse_unsaved call, or NULL if the last parse succeeded.
 /// Pointer is owned by the index; do not free.
 const char *cb_index_last_error(const CB_Index *idx);
+const char *cb_transunit_last_error(const CB_TransUnit *tu);
+int         cb_transunit_is_poisoned(const CB_TransUnit *tu);
+/// Test hook: deliberately raises SIGABRT inside the LLVM recovery boundary.
+/// Returns 0 when the signal was contained and the process survived.
+int         cb_crash_recovery_probe(CB_Index *idx);
+int         cb_transunit_crash_recovery_probe(CB_TransUnit *tu);
 
 // ── Parse from memory ─────────────────────────────────────────────────────────
 

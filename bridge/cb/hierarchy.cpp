@@ -38,6 +38,8 @@ static const FunctionDecl *hierarchyCallable(const NamedDecl *ND) {
 
 CB_CallHierItem *cb_call_hierarchy_prepare(CB_TransUnit *tu,
                                            uint32_t line, uint32_t col) {
+    return cb_recover(tu, __func__, static_cast<CB_CallHierItem *>(nullptr),
+                      [&]() -> CB_CallHierItem * {
     const NamedDecl *ND = locate_symbol_at(tu->ast.get(), line, col);
     if (!ND) return nullptr;
     const FunctionDecl *callable = hierarchyCallable(ND);
@@ -58,6 +60,7 @@ CB_CallHierItem *cb_call_hierarchy_prepare(CB_TransUnit *tu,
         item->col  = source_location_utf16_col(SM, ND->getLocation());
     }
     return item;
+    });
 }
 void             cb_call_hier_item_destroy(CB_CallHierItem *item) { delete item; }
 const char      *cb_call_hier_name  (const CB_CallHierItem *i) { return i->name.c_str(); }
@@ -157,20 +160,28 @@ public:
 };
 
 CB_CallEdgeList *cb_incoming_calls(CB_TransUnit *tu, const char *usr) {
+    return cb_recover(tu, __func__, static_cast<CB_CallEdgeList *>(nullptr),
+                      [&]() -> CB_CallEdgeList * {
     auto *list = new CB_CallEdgeList{};
     if (!usr || !*usr) return list;
     CallGraphVisitor vis(tu->ast->getASTContext(), usr, false, list->edges);
     vis.TraverseDecl(tu->ast->getASTContext().getTranslationUnitDecl());
     return list;
+    });
 }
 CB_CallEdgeList *cb_outgoing_calls(CB_TransUnit *tu, const char *usr) {
+    return cb_recover(tu, __func__, static_cast<CB_CallEdgeList *>(nullptr),
+                      [&]() -> CB_CallEdgeList * {
     auto *list = new CB_CallEdgeList{};
     if (!usr || !*usr) return list;
     CallGraphVisitor vis(tu->ast->getASTContext(), usr, true, list->edges);
     vis.TraverseDecl(tu->ast->getASTContext().getTranslationUnitDecl());
     return list;
+    });
 }
-size_t cb_call_edge_count(const CB_CallEdgeList *list) { return list->edges.size(); }
+size_t cb_call_edge_count(const CB_CallEdgeList *list) {
+    return list ? list->edges.size() : 0;
+}
 void cb_call_edge_get(const CB_CallEdgeList *list, size_t i, CB_CallEdge *out) {
     auto *ml = const_cast<CB_CallEdgeList *>(list);
     ml->current   = ml->edges[i];
@@ -220,6 +231,8 @@ static const CXXRecordDecl *findRecordByUSR(ASTContext &Ctx, const std::string &
 
 CB_TypeHierItem *cb_type_hierarchy_prepare(CB_TransUnit *tu,
                                            uint32_t line, uint32_t col) {
+    return cb_recover(tu, __func__, static_cast<CB_TypeHierItem *>(nullptr),
+                      [&]() -> CB_TypeHierItem * {
     const NamedDecl *ND = locate_symbol_at(tu->ast.get(), line, col);
     if (!ND) return nullptr;
     if (auto *TND = dyn_cast<TypedefNameDecl>(ND)) {
@@ -244,6 +257,7 @@ CB_TypeHierItem *cb_type_hierarchy_prepare(CB_TransUnit *tu,
         item->col  = source_location_utf16_col(SM, RD->getLocation());
     }
     return item;
+    });
 }
 void        cb_type_hier_item_destroy(CB_TypeHierItem *i) { delete i; }
 const char *cb_type_hier_name  (const CB_TypeHierItem *i) { return i->name.c_str(); }
@@ -254,6 +268,8 @@ uint32_t    cb_type_hier_col   (const CB_TypeHierItem *i) { return i->col; }
 const char *cb_type_hier_usr   (const CB_TypeHierItem *i) { return i->usr.c_str(); }
 
 CB_TypeHierList *cb_supertypes(CB_TransUnit *tu, const char *usr) {
+    return cb_recover(tu, __func__, static_cast<CB_TypeHierList *>(nullptr),
+                      [&]() -> CB_TypeHierList * {
     auto *list = new CB_TypeHierList{};
     if (!usr || !*usr) return list;
     ASTContext    &Ctx = tu->ast->getASTContext();
@@ -279,9 +295,12 @@ CB_TypeHierList *cb_supertypes(CB_TransUnit *tu, const char *usr) {
         list->entries.push_back(std::move(e));
     }
     return list;
+    });
 }
 
 CB_TypeHierList *cb_subtypes(CB_TransUnit *tu, const char *usr) {
+    return cb_recover(tu, __func__, static_cast<CB_TypeHierList *>(nullptr),
+                      [&]() -> CB_TypeHierList * {
     auto *list = new CB_TypeHierList{};
     if (!usr || !*usr) return list;
     ASTContext    &Ctx = tu->ast->getASTContext();
@@ -320,9 +339,12 @@ CB_TypeHierList *cb_subtypes(CB_TransUnit *tu, const char *usr) {
     } sf(target, list->entries, SM);
     sf.TraverseDecl(Ctx.getTranslationUnitDecl());
     return list;
+    });
 }
 
-size_t cb_type_hier_count(const CB_TypeHierList *list) { return list->entries.size(); }
+size_t cb_type_hier_count(const CB_TypeHierList *list) {
+    return list ? list->entries.size() : 0;
+}
 void cb_type_hier_get(const CB_TypeHierList *list, size_t i, CB_TypeHierEntry *out) {
     auto *ml = const_cast<CB_TypeHierList *>(list);
     ml->current = ml->entries[i];

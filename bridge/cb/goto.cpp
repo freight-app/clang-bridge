@@ -23,6 +23,7 @@ static bool fill_location_range(const SourceManager &SM,
 
 int cb_goto_definition(CB_TransUnit *tu, uint32_t line, uint32_t col,
                        CB_Location *out) {
+    return cb_recover(tu, __func__, 0, [&]() -> int {
     ASTContext          &Ctx = tu->ast->getASTContext();
     const SourceManager &SM  = Ctx.getSourceManager();
     const NamedDecl *ND = locate_symbol_at(tu->ast.get(), line, col);
@@ -60,6 +61,7 @@ int cb_goto_definition(CB_TransUnit *tu, uint32_t line, uint32_t col,
     }
     return fill_location_range(SM, Ctx.getLangOpts(), target->getLocation(),
                                end_token, out) ? 1 : 0;
+    });
 }
 
 // ── Code completion ───────────────────────────────────────────────────────────

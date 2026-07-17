@@ -629,6 +629,8 @@ public:
 
 CB_InlayHintList *cb_inlay_hints(CB_TransUnit *tu,
                                    uint32_t start_line, uint32_t end_line) {
+    return cb_recover(tu, __func__, static_cast<CB_InlayHintList *>(nullptr),
+                      [&]() -> CB_InlayHintList * {
     auto *list = new CB_InlayHintList{};
     ASTContext &Ctx = tu->ast->getASTContext();
     InlayHintVisitor V(Ctx, list->entries, start_line, end_line);
@@ -648,10 +650,11 @@ CB_InlayHintList *cb_inlay_hints(CB_TransUnit *tu,
     }), e.end());
 
     return list;
+    });
 }
 
 size_t cb_inlay_hint_count(const CB_InlayHintList *list) {
-    return list->entries.size();
+    return list ? list->entries.size() : 0;
 }
 
 void cb_inlay_hint_get(const CB_InlayHintList *list, size_t i, CB_InlayHint *out) {
@@ -670,6 +673,7 @@ void cb_inlay_hint_list_destroy(CB_InlayHintList *list) { delete list; }
 /// Return the type string for the variable/field/parameter at (line, col),
 /// or NULL.  Useful for enriching hover when no doc comment exists.
 char *cb_type_at(CB_TransUnit *tu, uint32_t line, uint32_t col) {
+    return cb_recover(tu, __func__, static_cast<char *>(nullptr), [&]() -> char * {
     const NamedDecl *ND = locate_symbol_at(tu->ast.get(), line, col);
     if (!ND) return nullptr;
     ASTContext &Ctx = tu->ast->getASTContext();
@@ -684,6 +688,7 @@ char *cb_type_at(CB_TransUnit *tu, uint32_t line, uint32_t col) {
     PP.SuppressScope = 0;
     std::string s = qt.getAsString(PP);
     return s.empty() ? nullptr : strdup(s.c_str());
+    });
 }
 
 // ── Macro hover ───────────────────────────────────────────────────────────────
@@ -691,6 +696,7 @@ char *cb_type_at(CB_TransUnit *tu, uint32_t line, uint32_t col) {
 /// Return a Markdown hover string for the macro at (line, col), or NULL if
 /// (line, col) is not a macro use site.  Caller must free with cb_free_string().
 char *cb_macro_at(CB_TransUnit *tu, uint32_t line, uint32_t col) {
+    return cb_recover(tu, __func__, static_cast<char *>(nullptr), [&]() -> char * {
     ASTContext &Ctx = tu->ast->getASTContext();
     const SourceManager &SM = Ctx.getSourceManager();
     const LangOptions &LO   = Ctx.getLangOpts();
@@ -759,6 +765,7 @@ char *cb_macro_at(CB_TransUnit *tu, uint32_t line, uint32_t col) {
     }
 
     return strdup(md.c_str());
+    });
 }
 
 // ── Symbol lookup ─────────────────────────────────────────────────────────────

@@ -34,6 +34,8 @@
 #include <clang/Tooling/Core/Replacement.h>
 #include <clang/Tooling/Tooling.h>
 #include <llvm/ADT/DenseSet.h>
+#include <llvm/ADT/STLFunctionalExtras.h>
+#include <llvm/Support/CrashRecoveryContext.h>
 #include <llvm/Support/raw_ostream.h>
 #include <llvm/Support/VirtualFileSystem.h>
 
@@ -65,10 +67,13 @@ struct ReferenceEntry {
 struct CB_Index {
     std::string last_error;
     std::unordered_multimap<std::string, WorkspaceSymEntry> sym_index;
+    bool poisoned = false;
 };
 
 struct CB_TransUnit {
     std::unique_ptr<ASTUnit> ast;
+    std::string last_error;
+    bool poisoned = false;
 };
 
 // ── Shared helper declarations (defined in core.cpp) ──────────────────────────
@@ -100,3 +105,38 @@ uint32_t source_location_utf16_col(const clang::SourceManager &SM,
 
 /// Count UTF-16 code units in UTF-8 source text.
 uint32_t utf16_length(llvm::StringRef text);
+
+/// Execute Clang/LLVM work behind LLVM's platform crash-recovery boundary.
+/// A crashed TU is poisoned and its AST intentionally leaked: running its
+/// destructor or querying it again is unsafe after signal recovery.
+bool cb_run_safely(CB_Index *idx, const char *operation,
+                   llvm::function_ref<void()> fn);
+bool cb_run_safely(CB_TransUnit *tu, const char *operation,
+                   llvm::function_ref<void()> fn);
+bool cb_run_safely(llvm::function_ref<void()> fn);
+
+template <typename Result, typename Fn>
+Result cb_recover(CB_TransUnit *tu, const char *operation,
+                  Result fallback, Fn &&fn) {
+    Result result = fallback;
+    if (!cb_run_safely(tu, operation, [&] { result = fn(); }))
+        return fallback;
+    return result;
+}
+
+template <typename Result, typename Fn>
+Result cb_recover(CB_Index *idx, const char *operation,
+                  Result fallback, Fn &&fn) {
+    Result result = fallback;
+    if (!cb_run_safely(idx, operation, [&] { result = fn(); }))
+        return fallback;
+    return result;
+}
+
+template <typename Result, typename Fn>
+Result cb_recover(Result fallback, Fn &&fn) {
+    Result result = fallback;
+    if (!cb_run_safely([&] { result = fn(); }))
+        return fallback;
+    return result;
+}

@@ -66,6 +66,7 @@ static std::string renderFullComment(const comments::FullComment *FC,
 /// otherwise preserves the original formatting.  Caller must free with
 /// cb_free_string().
 char *cb_raw_comment_at(CB_TransUnit *tu, uint32_t line, uint32_t col) {
+    return cb_recover(tu, __func__, static_cast<char *>(nullptr), [&]() -> char * {
     const NamedDecl *ND = locate_symbol_at(tu->ast.get(), line, col);
     if (!ND) return nullptr;
     ASTContext &Ctx = tu->ast->getASTContext();
@@ -74,11 +75,13 @@ char *cb_raw_comment_at(CB_TransUnit *tu, uint32_t line, uint32_t col) {
     std::string text = RC->getFormattedText(Ctx.getSourceManager(), Ctx.getDiagnostics());
     if (text.empty()) return nullptr;
     return strdup(text.c_str());
+    });
 }
 
 /// Full hover: signature + structured doc comment (param/returns/note) + def location.
 /// Falls back to brief + signature when no structured comment is present.
 char *cb_hover_full(CB_TransUnit *tu, uint32_t line, uint32_t col) {
+    return cb_recover(tu, __func__, static_cast<char *>(nullptr), [&]() -> char * {
     const NamedDecl *ND = locate_symbol_at(tu->ast.get(), line, col);
     if (!ND) return nullptr;
     ASTContext &Ctx = tu->ast->getASTContext();
@@ -117,9 +120,11 @@ char *cb_hover_full(CB_TransUnit *tu, uint32_t line, uint32_t col) {
 
     if (md.empty()) return nullptr;
     return strdup(md.c_str());
+    });
 }
 
 char *cb_hover_markdown(CB_TransUnit *tu, uint32_t line, uint32_t col) {
+    return cb_recover(tu, __func__, static_cast<char *>(nullptr), [&]() -> char * {
     const NamedDecl *ND = locate_symbol_at(tu->ast.get(), line, col);
     if (!ND) return nullptr;
     ASTContext &Ctx = tu->ast->getASTContext();
@@ -151,6 +156,7 @@ char *cb_hover_markdown(CB_TransUnit *tu, uint32_t line, uint32_t col) {
     }
     if (md.empty()) return nullptr;
     return strdup(md.c_str());
+    });
 }
 
 // ── Go-to-definition ──────────────────────────────────────────────────────────

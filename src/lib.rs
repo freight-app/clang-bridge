@@ -113,6 +113,21 @@ unsafe impl Send for Index {}
 pub struct TranslationUnit(*mut ffi::CB_TransUnit);
 
 impl TranslationUnit {
+    /// Whether LLVM crash recovery has quarantined this translation unit.
+    pub fn is_poisoned(&self) -> bool {
+        unsafe { ffi::cb_transunit_is_poisoned(self.0) != 0 }
+    }
+
+    /// Description of the crash that poisoned this translation unit.
+    pub fn last_error(&self) -> Option<String> {
+        let ptr = unsafe { ffi::cb_transunit_last_error(self.0) };
+        if ptr.is_null() {
+            None
+        } else {
+            Some(unsafe { std::ffi::CStr::from_ptr(ptr) }.to_string_lossy().into_owned())
+        }
+    }
+
     /// All documented declarations in this TU.
     pub fn doc_items(&self) -> doc::DocIter {
         doc::DocIter(unsafe { ffi::cb_doc_extract(self.0) })
@@ -249,3 +264,44 @@ impl Drop for TranslationUnit {
 }
 
 unsafe impl Send for TranslationUnit {}
+
+#[cfg(all(test, unix))]
+mod crash_recovery_tests {
+    use super::{ffi, Index};
+
+    #[test]
+    fn abort_inside_recovery_boundary_returns_to_rust() {
+        let index = Index::new();
+        let recovered = unsafe { ffi::cb_crash_recovery_probe(index.0) };
+
+        assert_eq!(recovered, 0);
+        assert_eq!(
+            index.last_error().as_deref(),
+            Some("clang crashed during crash recovery probe")
+        );
+    }
+
+    #[test]
+    fn abort_poisoned_translation_unit_rejects_later_queries() {
+        let index = Index::new();
+        let tu = index
+            .parse_unsaved(
+                "/tmp/cb_crash_recovery.cpp",
+                "",
+                "int answer = 42;\n",
+                &["-std=c++17"],
+            )
+            .expect("crash recovery fixture should parse");
+
+        let recovered = unsafe { ffi::cb_transunit_crash_recovery_probe(tu.0) };
+
+        assert_eq!(recovered, 0);
+        assert!(tu.is_poisoned());
+        assert_eq!(
+            tu.last_error().as_deref(),
+            Some("clang crashed during translation unit crash recovery probe")
+        );
+        assert_eq!(tu.diagnostics().count(), 0);
+        assert!(tu.symbol_at(1, 5).is_none());
+    }
+}
