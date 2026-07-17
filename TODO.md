@@ -258,10 +258,12 @@ Beyond the reparse items in §1:
       uses the defined identifier. Freight forwards the range unchanged to
       LSP. Regressions cover functions, macros, multibyte source lines, and the
       embedded Freight indexer boundary.
-- [ ] **Progress + status surfacing.** Long first-parses are invisible — the
-      editor just shows nothing. Emit `$/progress` (work-done) from freight
-      around initial parse / refresh_flags, and a status-bar state
-      (parsing/idle/error) the VS Code extension can show.
+- [x] **Progress + status surfacing** (2026-07-17). Freight emits capability-
+      gated LSP work-done progress around initial native C/C++ parses and
+      compile-command/flag refreshes, plus `freight/status` notifications for
+      parsing, idle, and error states. The VS Code client maps those states onto
+      its existing Freight status item. Protocol-shape and extension build/test
+      coverage keep both ends in sync.
 - [x] **Stale-flag refresh** (2026-07-17). `refresh_flags` compares each cached
       TU's complete `(working_dir, flags)` entry with the newly generated map
       and evicts only changed or removed entries. Unchanged ASTs retain their
