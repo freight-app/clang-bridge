@@ -232,9 +232,17 @@ features. Roughly in priority order:
 Reuse the clangd JSON-RPC oracle harness from the 2026-06-10 audit
 (`/tmp/clangd_probe.py` pattern: initialize → didOpen → query → diff):
 
-- [ ] **Diagnostics** — message/range/severity/relatedInformation. clangd
-      publishes these *asynchronously* after didOpen: the harness must pump the
-      raw fd (Python's buffered stream deadlocks).
+- [x] **Diagnostics differential** (2026-07-17) — an explicitly invoked
+      clangd JSON-RPC oracle pumps stdout on a reader thread and compares all
+      compiler diagnostics from malformed main-file source plus a transitive
+      header error. Message facts, half-open UTF-16 ranges, severities, include
+      anchors, and related-information source ranges match. The audit found and
+      fixed zero-width bridge ranges when clang omitted an explicit range,
+      token-range end conversion, and Freight dropping diagnostic end ranges
+      and clangd-compatible message/related-information shaping. Clangd's
+      separate include-cleaner diagnostic is intentionally excluded because it
+      is not a compiler diagnostic. Run with `cargo test -p clang-bridge --test
+      diagnostics_oracle -- --ignored --nocapture`.
 - [ ] **Signature help** — active-parameter tracking through nested/partial calls.
 - [ ] **Hover** — content + range parity (markdown shape may differ; diff the
       facts: signature, doc, type).

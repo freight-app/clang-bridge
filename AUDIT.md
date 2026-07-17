@@ -491,6 +491,30 @@ identifier physically written under the cursor in `locate_symbol_at` and require
 each candidate's name to equal it (`name == cursor_ident`), so only the symbol the
 user actually pointed at is accepted.
 
+## Round 5 — default-on differential verification
+
+### B-29 — diagnostic ranges diverged from clangd
+
+**Files:** `bridge/cb/diag.cpp`, `tests/diagnostics_oracle.rs`, and Freight's
+`src/lsp/indexers/Clang.rs`
+
+The asynchronous clangd oracle compared the four compiler errors in
+`broken.cpp` plus an error reached through two nested headers. When clang did
+not attach a `CharSourceRange`, the bridge returned a zero-width range even for
+an identifier or keyword; clangd highlights the complete token. Explicit token
+ranges also need conversion to a half-open end. The bridge now uses
+`Lexer::getLocForEndOfToken` for both cases while retaining genuinely
+between-token diagnostics (such as a missing semicolon) as zero-width.
+
+Freight was also discarding `Diagnostic::end_line/end_col` while constructing
+LSP JSON. It now preserves the full range, uses clangd's direct-message display
+shape (capitalized and marked when a fix is available), and publishes nested
+header related information over the original full source range with the
+standard `Error occurred here` message. Message facts, ranges, severities,
+include anchors, and related locations now match clangd 22. Clangd's separate
+include-cleaner warning is excluded because it does not originate from clang's
+compiler diagnostics.
+
 ## Round-2 functions verified correct (no fix needed)
 
 `format` (spacing edits, style-dir), type hierarchy (direct-only super/subtypes),

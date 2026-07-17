@@ -74,6 +74,7 @@ CB_DiagIter *cb_diag_iter(CB_TransUnit *tu) {
     return cb_recover(tu, __func__, static_cast<CB_DiagIter *>(nullptr), [&]() -> CB_DiagIter * {
     auto *it = new CB_DiagIter{};
     const SourceManager &SM = tu->ast->getSourceManager();
+    const LangOptions &LangOpts = tu->ast->getASTContext().getLangOpts();
     for (auto it2 = tu->ast->stored_diag_begin();
          it2 != tu->ast->stored_diag_end(); ++it2) {
         const StoredDiagnostic &sd = *it2;
@@ -84,6 +85,20 @@ CB_DiagIter *cb_diag_iter(CB_TransUnit *tu) {
             e.file = ploc.getFilename() ? ploc.getFilename() : "";
             e.line = e.end_line = (uint32_t)ploc.getLine();
             e.col = e.end_col = source_location_utf16_col(SM, sd.getLocation());
+
+            // Clangd highlights the token at a diagnostic location when clang
+            // does not provide an explicit range (identifiers, keywords, and
+            // punctuation). Keep genuinely between-token locations, such as a
+            // missing semicolon at end-of-statement, zero-width.
+            SourceLocation tokenEnd = Lexer::getLocForEndOfToken(
+                SM.getFileLoc(sd.getLocation()), 0, SM, LangOpts);
+            if (tokenEnd.isValid()) {
+                auto tokenEndLoc = SM.getPresumedLoc(tokenEnd);
+                if (tokenEndLoc.isValid()) {
+                    e.end_line = tokenEndLoc.getLine();
+                    e.end_col = source_location_utf16_col(SM, tokenEnd);
+                }
+            }
         }
 
         SourceLocation anchor = main_file_include_anchor(tu->ast.get(),
@@ -101,14 +116,20 @@ CB_DiagIter *cb_diag_iter(CB_TransUnit *tu) {
         // Expand squiggle range from the first reported source range.
         for (const auto &range : sd.getRanges()) {
             auto sl = SM.getPresumedLoc(range.getBegin());
-            auto el = SM.getPresumedLoc(range.getEnd());
+            SourceLocation rangeEnd = range.getEnd();
+            if (range.isTokenRange()) {
+                SourceLocation afterToken = Lexer::getLocForEndOfToken(
+                    rangeEnd, 0, SM, LangOpts);
+                if (afterToken.isValid()) rangeEnd = afterToken;
+            }
+            auto el = SM.getPresumedLoc(rangeEnd);
             if (sl.isValid()) {
                 e.line = sl.getLine();
                 e.col = source_location_utf16_col(SM, range.getBegin());
             }
             if (el.isValid()) {
                 e.end_line = el.getLine();
-                e.end_col = source_location_utf16_col(SM, range.getEnd());
+                e.end_col = source_location_utf16_col(SM, rangeEnd);
             }
             break; // first range is sufficient
         }
