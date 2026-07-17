@@ -495,7 +495,7 @@ user actually pointed at is accepted.
 
 ### B-29 — diagnostic ranges diverged from clangd
 
-**Files:** `bridge/cb/diag.cpp`, `tests/diagnostics_oracle.rs`, and Freight's
+**Files:** `bridge/cb/diag.cpp`, `tests/clangd_oracle.rs`, and Freight's
 `src/lsp/indexers/Clang.rs`
 
 The asynchronous clangd oracle compared the four compiler errors in
@@ -514,6 +514,22 @@ standard `Error occurred here` message. Message facts, ranges, severities,
 include anchors, and related locations now match clangd 22. Clangd's separate
 include-cleaner warning is excluded because it does not originate from clang's
 compiler diagnostics.
+
+### B-30 — signature help was verified but not wired into Freight
+
+**Files:** `tests/clangd_oracle.rs`, `tests/sighelp.rs`, and Freight's
+`src/lsp/indexers/Clang.rs`
+
+The generalized clangd oracle probes six positions covering first/second
+arguments in an inner call, returning to the enclosing call, a second nested
+call, and a missing third argument in an incomplete call. The bridge matches
+clangd 22 for the selected callable, parameter labels, and active parameter at
+every position, so its `CodeCompleteConsumer::ProcessOverloadCandidates`
+implementation needed no correction. The integration audit did reveal that
+native `ClangIndexer` never implemented `LanguageIndexer::signature_help`,
+leaving the verified API unreachable when clangd was disabled. Freight now
+returns native LSP `SignatureHelp` with all overload/parameter labels and the
+bridge's active parameter.
 
 ## Round-2 functions verified correct (no fix needed)
 

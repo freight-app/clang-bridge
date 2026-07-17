@@ -1,9 +1,9 @@
-//! Differential diagnostics audit against clangd.
+//! Differential API audit against clangd.
 //!
 //! Run with:
-//! `cargo test -p clang-bridge --test diagnostics_oracle -- --ignored --nocapture`
+//! `cargo test -p clang-bridge --test clangd_oracle -- --ignored --nocapture`
 
-use clang_bridge::{diag::Diagnostic, diag::Severity, Index};
+use clang_bridge::{diag::Diagnostic, diag::Severity, sighelp, Index};
 use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -57,7 +57,12 @@ impl Clangd {
                 "rootUri": file_uri(root),
                 "capabilities": {
                     "textDocument": {
-                        "publishDiagnostics": { "relatedInformation": true }
+                        "publishDiagnostics": { "relatedInformation": true },
+                        "signatureHelp": {
+                            "signatureInformation": {
+                                "parameterInformation": { "labelOffsetSupport": true }
+                            }
+                        }
                     }
                 }
             }
@@ -68,6 +73,20 @@ impl Clangd {
     }
 
     fn diagnostics(&mut self, path: &Path, source: &str) -> Vec<Value> {
+        let uri = file_uri(path);
+        self.open(path, source);
+        self.recv_until(Duration::from_secs(10), |message| {
+            message["method"] == "textDocument/publishDiagnostics"
+                && message["params"]["uri"] == uri
+                && message["params"]["diagnostics"]
+                    .as_array()
+                    .is_some_and(|diagnostics| !diagnostics.is_empty())
+        })
+        .and_then(|message| message["params"]["diagnostics"].as_array().cloned())
+        .expect("clangd did not publish diagnostics")
+    }
+
+    fn open(&mut self, path: &Path, source: &str) {
         let uri = file_uri(path);
         self.send(json!({
             "jsonrpc": "2.0",
@@ -81,15 +100,18 @@ impl Clangd {
                 }
             }
         }));
-        self.recv_until(Duration::from_secs(10), |message| {
-            message["method"] == "textDocument/publishDiagnostics"
-                && message["params"]["uri"] == uri
-                && message["params"]["diagnostics"]
-                    .as_array()
-                    .is_some_and(|diagnostics| !diagnostics.is_empty())
-        })
-        .and_then(|message| message["params"]["diagnostics"].as_array().cloned())
-        .expect("clangd did not publish diagnostics")
+    }
+
+    fn request(&mut self, id: u64, method: &str, params: Value) -> Value {
+        self.send(json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": method,
+            "params": params
+        }));
+        self.recv_until(Duration::from_secs(10), |message| message["id"] == id)
+            .and_then(|message| message.get("result").cloned())
+            .expect("clangd request did not return a result")
     }
 
     fn send(&mut self, message: Value) {
@@ -269,4 +291,81 @@ fn diagnostics_match_clangd_on_broken_source_and_nested_header() {
         clangd["relatedInformation"][0]["location"]["range"],
         bridge_range(&bridge)
     );
+}
+
+fn clangd_parameter_labels(signature: &Value) -> Vec<String> {
+    let label = signature["label"].as_str().unwrap();
+    signature["parameters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|parameter| {
+            let offsets = parameter["label"].as_array().unwrap();
+            let start = offsets[0].as_u64().unwrap() as usize;
+            let end = offsets[1].as_u64().unwrap() as usize;
+            label[start..end].to_string()
+        })
+        .collect()
+}
+
+#[test]
+#[ignore = "requires clangd; run explicitly for the differential audit"]
+fn signature_help_matches_clangd_for_nested_and_partial_calls() {
+    let source = concat!(
+        "int inner(int first, int second);\n",
+        "int outer(int alpha, int beta, int gamma);\n",
+        "void test() {\n",
+        "  outer(inner(1, 2), 3, 4);\n",
+        "  outer(1, inner(2, 3), 4);\n",
+        "  outer(1, 2, );\n",
+        "}"
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let main = dir.path().join("main.cpp");
+    std::fs::write(&main, source).unwrap();
+    let mut clangd = Clangd::start(dir.path()).expect("clangd must be available");
+    clangd.open(&main, source);
+    let (_index, tu) = parse(&main, dir.path());
+
+    let cases = [
+        (3, 15, "inner", 0),
+        (3, 18, "inner", 1),
+        (3, 22, "outer", 1),
+        (4, 21, "inner", 1),
+        (4, 25, "outer", 2),
+        (5, 14, "outer", 2),
+    ];
+    for (offset, (line, character, function, active_parameter)) in cases.into_iter().enumerate() {
+        let clangd_help = clangd.request(
+            10 + offset as u64,
+            "textDocument/signatureHelp",
+            json!({
+                "textDocument": { "uri": file_uri(&main) },
+                "position": { "line": line, "character": character },
+                "context": { "triggerKind": 1 }
+            }),
+        );
+        let bridge_help = sighelp::signature_help(&tu, line + 1, character + 1)
+            .unwrap_or_else(|| panic!("bridge signature help at {line}:{character}"));
+
+        assert_eq!(clangd_help["activeParameter"], active_parameter);
+        assert_eq!(bridge_help.active_param, active_parameter);
+        let clangd_signature = clangd_help["signatures"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|signature| signature["label"].as_str().unwrap().contains(function))
+            .expect("clangd overload");
+        let bridge_signature = bridge_help
+            .overloads
+            .iter()
+            .find(|signature| signature.label.contains(function))
+            .expect("bridge overload");
+        let bridge_params: Vec<_> = bridge_signature
+            .params
+            .iter()
+            .map(|parameter| parameter.label.clone())
+            .collect();
+        assert_eq!(clangd_parameter_labels(clangd_signature), bridge_params);
+    }
 }

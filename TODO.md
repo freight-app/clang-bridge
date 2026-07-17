@@ -242,8 +242,17 @@ Reuse the clangd JSON-RPC oracle harness from the 2026-06-10 audit
       and clangd-compatible message/related-information shaping. Clangd's
       separate include-cleaner diagnostic is intentionally excluded because it
       is not a compiler diagnostic. Run with `cargo test -p clang-bridge --test
-      diagnostics_oracle -- --ignored --nocapture`.
-- [ ] **Signature help** — active-parameter tracking through nested/partial calls.
+      clangd_oracle diagnostics_match_clangd_on_broken_source_and_nested_header
+      -- --ignored --nocapture`.
+- [x] **Signature-help differential** (2026-07-17) — the reusable clangd
+      oracle verifies active-parameter selection, callable selection, and
+      parameter labels at six positions across nested calls, resumed outer
+      calls, and an incomplete final argument. The bridge matched clangd 22
+      without an algorithm change. Freight's native `ClangIndexer` now wires
+      the previously unused bridge API into LSP `SignatureHelp`, including
+      overload and parameter labels. Run with `cargo test -p clang-bridge
+      --test clangd_oracle signature_help_matches_clangd_for_nested_and_partial_calls
+      -- --ignored --nocapture`.
 - [ ] **Hover** — content + range parity (markdown shape may differ; diff the
       facts: signature, doc, type).
 - [ ] **Call/type hierarchy** — edge sets on the fixture hierarchy.
