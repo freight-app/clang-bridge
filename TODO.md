@@ -199,13 +199,12 @@ features. Roughly in priority order:
       - Regression coverage: `tests/utf16_positions.rs` exercises navigation,
         symbols, hierarchy, inlay hints, diagnostics/fix-its, AST output, and
         Unicode inclusion ranges with BMP and surrogate-pair characters.
-- [ ] **Diagnostics from headers are dropped silently.** `Clang.rs::diagnostics`
-      filters to `d.file == <main file>`, so an error *caused* by the open
-      file but *reported* in an included header vanishes entirely. clangd
-      surfaces these as "In included file: …" anchored on the `#include`
-      line. **Fix:** map header diagnostics to the including `#include`
-      directive in the main file (the inclusion chain is available via
-      `cb_inclusions`/SourceManager).
+- [x] **Diagnostics from headers are anchored in the main file** (2026-07-17).
+      `CB_Diag` preserves the original header range and exposes the outermost
+      main-file include anchor, including through loaded preambles and nested
+      include chains. Freight publishes `In included file: ...` on the direct
+      include path and adds the original header range as `relatedInformation`.
+      Regressions cover both the bridge contract and the Freight LSP boundary.
 - [ ] **Semantic-token cosmetic gaps** (accepted in B-24, revisit before
       default-on): `auto` not coloured as deduced type; `geo::`-style
       nested-name-specifier qualifiers unvisited since clang 22 dropped

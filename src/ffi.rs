@@ -53,6 +53,9 @@ pub struct CB_Diag {
     pub severity: u8,
     pub message: *const c_char,
     pub check_name: *const c_char,
+    pub include_anchor_file: *const c_char,
+    pub include_anchor_line: u32,
+    pub include_anchor_col: u32,
 }
 
 #[repr(C)]

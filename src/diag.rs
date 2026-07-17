@@ -39,6 +39,16 @@ pub struct FixIt {
     pub replacement: String,
 }
 
+/// The outermost `#include` directive in the main file that led to a
+/// diagnostic reported in a header.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IncludeAnchor {
+    pub file: String,
+    /// Include filename position, 1-based and UTF-16 encoded.
+    pub line: u32,
+    pub col: u32,
+}
+
 #[derive(Debug, Clone)]
 pub struct Diagnostic {
     pub file: String,
@@ -52,6 +62,9 @@ pub struct Diagnostic {
     pub message: String,
     /// Diagnostic check name (e.g. `clang-diagnostic-unused-variable`). `None` if unknown.
     pub check_name: Option<String>,
+    /// Main-file include that made a header diagnostic relevant to this TU.
+    /// Direct main-file diagnostics have no anchor.
+    pub include_anchor: Option<IncludeAnchor>,
     /// Compiler-suggested source edits for this diagnostic.
     pub fixits: Vec<FixIt>,
 }
@@ -72,6 +85,9 @@ impl Iterator for DiagIter {
             severity: 0,
             message: std::ptr::null(),
             check_name: std::ptr::null(),
+            include_anchor_file: std::ptr::null(),
+            include_anchor_line: 0,
+            include_anchor_col: 0,
         };
         let ok = unsafe { ffi::cb_diag_next(self.0, &mut raw) };
         if ok == 0 {
@@ -114,6 +130,15 @@ impl Iterator for DiagIter {
             severity:   Severity::from_u8(raw.severity),
             message:    s(raw.message),
             check_name: if raw.check_name.is_null() { None } else { Some(s(raw.check_name)) },
+            include_anchor: if raw.include_anchor_file.is_null() {
+                None
+            } else {
+                Some(IncludeAnchor {
+                    file: s(raw.include_anchor_file),
+                    line: raw.include_anchor_line,
+                    col: raw.include_anchor_col,
+                })
+            },
             fixits,
         })
     }

@@ -105,6 +105,7 @@ fn parse_output(text: &str) -> Vec<Diagnostic> {
             severity,
             message,
             check_name,
+            include_anchor: None,
             fixits: Vec::new(),
         });
     }

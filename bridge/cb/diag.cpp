@@ -17,6 +17,9 @@ struct DiagEntry {
     uint8_t     severity = 0;
     std::string message;
     std::string check_name;
+    std::string include_anchor_file;
+    uint32_t    include_anchor_line = 0;
+    uint32_t    include_anchor_col  = 0;
     std::vector<FixItEntry> fixits;
 };
 
@@ -42,6 +45,31 @@ static uint8_t cb_severity_from_level(DiagnosticsEngine::Level lvl) {
     return 0;
 }
 
+static SourceLocation main_file_include_anchor(ASTUnit *ast,
+                                               SourceLocation diagnostic_loc) {
+    const SourceManager &SM = ast->getSourceManager();
+    SourceLocation loc = SM.getFileLoc(diagnostic_loc);
+    std::unordered_set<unsigned> visited;
+
+    SourceLocation initial = ast->mapLocationFromPreamble(loc);
+    if (initial.isValid() && SM.getFileID(initial) == SM.getMainFileID())
+        return SourceLocation();
+
+    while (loc.isValid()) {
+        FileID fid = SM.getFileID(loc);
+        if (fid.isInvalid() || !visited.insert(fid.getHashValue()).second)
+            break;
+        loc = SM.getIncludeLoc(fid);
+
+        // An include written in the preamble has a loaded location. Convert it
+        // to the current main-file buffer before comparing or returning it.
+        SourceLocation mapped = ast->mapLocationFromPreamble(loc);
+        if (mapped.isValid() && SM.getFileID(mapped) == SM.getMainFileID())
+            return mapped;
+    }
+    return SourceLocation();
+}
+
 CB_DiagIter *cb_diag_iter(CB_TransUnit *tu) {
     auto *it = new CB_DiagIter{};
     const SourceManager &SM = tu->ast->getSourceManager();
@@ -55,6 +83,18 @@ CB_DiagIter *cb_diag_iter(CB_TransUnit *tu) {
             e.file = ploc.getFilename() ? ploc.getFilename() : "";
             e.line = e.end_line = (uint32_t)ploc.getLine();
             e.col = e.end_col = source_location_utf16_col(SM, sd.getLocation());
+        }
+
+        SourceLocation anchor = main_file_include_anchor(tu->ast.get(),
+                                                         sd.getLocation());
+        if (anchor.isValid()) {
+            auto anchor_ploc = SM.getPresumedLoc(anchor);
+            if (anchor_ploc.isValid()) {
+                e.include_anchor_file = anchor_ploc.getFilename()
+                                            ? anchor_ploc.getFilename() : "";
+                e.include_anchor_line = anchor_ploc.getLine();
+                e.include_anchor_col = source_location_utf16_col(SM, anchor);
+            }
         }
 
         // Expand squiggle range from the first reported source range.
@@ -109,6 +149,10 @@ int cb_diag_next(CB_DiagIter *it, CB_Diag *out) {
     out->message    = it->current.message.c_str();
     out->check_name = it->current.check_name.empty()
                     ? nullptr : it->current.check_name.c_str();
+    out->include_anchor_file = it->current.include_anchor_file.empty()
+                             ? nullptr : it->current.include_anchor_file.c_str();
+    out->include_anchor_line = it->current.include_anchor_line;
+    out->include_anchor_col  = it->current.include_anchor_col;
     return 1;
 }
 

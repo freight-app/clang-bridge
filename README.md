@@ -107,7 +107,10 @@ for item in completion::complete(&tu, 15, 8, None) {
 
 // Diagnostics
 for d in tu.diagnostics() {
-    println!("[{}] {}:{} — {}", d.severity, d.line, d.col, d.message);
+    println!("[{:?}] {}:{} — {}", d.severity, d.line, d.col, d.message);
+    if let Some(include) = &d.include_anchor {
+        println!("  included from {}:{}", include.file, include.line);
+    }
 }
 
 // Reparse with unsaved content after an edit

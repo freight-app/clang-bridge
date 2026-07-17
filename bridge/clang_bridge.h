@@ -106,6 +106,13 @@ typedef struct {
     uint8_t     severity;      // 0=note 1=remark 2=warning 3=error 4=fatal
     const char *message;
     const char *check_name;    // NULL if unknown
+    // Outermost #include in the main file that led to this diagnostic.
+    // NULL for diagnostics reported directly in the main file or when no
+    // include chain can be recovered. Position is 1-based and points at the
+    // include filename; consumers can use cb_inclusions for its full range.
+    const char *include_anchor_file;
+    uint32_t    include_anchor_line;
+    uint32_t    include_anchor_col;
 } CB_Diag;
 
 /// One source-level replacement suggested by the compiler.

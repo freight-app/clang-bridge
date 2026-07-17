@@ -118,9 +118,14 @@ fn diag_type_error_is_error_not_fatal() {
     let path = write_temp("cb_diag_sev_err.cpp", "void f() { int x = \"bad\"; }");
     let idx = Index::new();
     let tu = idx.parse(path.to_str().unwrap(), "", &["-std=c++17"]).unwrap();
-    let sevs: Vec<_> = tu.diagnostics().map(|d| d.severity).collect();
+    let diagnostics: Vec<_> = tu.diagnostics().collect();
+    let sevs: Vec<_> = diagnostics.iter().map(|d| d.severity).collect();
     assert!(sevs.contains(&Severity::Error), "expected an Error, got {sevs:?}");
     assert!(!sevs.contains(&Severity::Fatal), "type error must not be Fatal: {sevs:?}");
+    assert!(
+        diagnostics.iter().all(|d| d.include_anchor.is_none()),
+        "main-file diagnostics must not have include anchors: {diagnostics:?}"
+    );
 }
 
 /// A "'x' declared here" note must be reported at `Note` severity, not `Remark`.
@@ -133,4 +138,34 @@ fn diag_declared_here_is_note() {
         .diagnostics()
         .any(|d| d.severity == Severity::Note && d.message.contains("declared here"));
     assert!(has_note, "expected a Note-severity 'declared here' diagnostic");
+}
+
+#[test]
+fn header_diagnostic_points_to_outermost_main_file_include() {
+    let dir = tempfile::tempdir().expect("header diagnostic fixture");
+    let main = dir.path().join("main.cpp");
+    let outer = dir.path().join("outer.hpp");
+    let inner = dir.path().join("inner.hpp");
+    std::fs::write(&main, "#include \"outer.hpp\"\nint main() { return 0; }\n").unwrap();
+    std::fs::write(&outer, "#pragma once\n#include \"inner.hpp\"\n").unwrap();
+    std::fs::write(&inner, "#pragma once\ninline int broken = missing_name;\n").unwrap();
+
+    let idx = Index::new();
+    let tu = idx
+        .parse(main.to_str().unwrap(), dir.path().to_str().unwrap(), &["-std=c++17"])
+        .expect("parse failed");
+    assert!(tu.reparse(None), "reparse should retain header diagnostics");
+
+    let diagnostic = tu
+        .diagnostics()
+        .find(|d| d.file == inner.to_string_lossy() && d.message.contains("missing_name"))
+        .expect("expected diagnostic from nested header");
+    assert_eq!(
+        diagnostic.include_anchor,
+        Some(clang_bridge::diag::IncludeAnchor {
+            file: main.to_string_lossy().into_owned(),
+            line: 1,
+            col: 10,
+        })
+    );
 }
