@@ -262,9 +262,11 @@ Beyond the reparse items in §1:
       editor just shows nothing. Emit `$/progress` (work-done) from freight
       around initial parse / refresh_flags, and a status-bar state
       (parsing/idle/error) the VS Code extension can show.
-- [ ] **Stale-flag refresh.** `refresh_flags` clears *all* TUs whenever
-      compile_commands changes → every open file re-parses at once. Only
-      evict TUs whose flags actually changed.
+- [x] **Stale-flag refresh** (2026-07-17). `refresh_flags` compares each cached
+      TU's complete `(working_dir, flags)` entry with the newly generated map
+      and evicts only changed or removed entries. Unchanged ASTs retain their
+      LRU position, while changed TUs retain unsaved buffer text for their next
+      parse. A Freight regression covers unchanged, changed, and removed files.
 
 ### 4. Missing features worth adding (clangd has them, users notice)
 
