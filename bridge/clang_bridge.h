@@ -6,6 +6,10 @@
 extern "C" {
 #endif
 
+/// Source positions use 1-based lines and 1-based UTF-16 code-unit columns.
+/// Source-span lengths exposed alongside those positions are also measured in
+/// UTF-16 code units unless a field explicitly documents byte offsets.
+
 // ── Opaque handles ────────────────────────────────────────────────────────────
 
 typedef struct CB_Index      CB_Index;
@@ -242,7 +246,7 @@ void              cb_inclusion_list_destroy(CB_InclusionList *list);
 typedef struct {
     uint32_t line;       // 1-based
     uint32_t col;        // 1-based
-    uint32_t length;     // name length in characters
+    uint32_t length;     // name length in UTF-16 code units
     uint8_t  token_type; // CB_TOK_* constant above
 } CB_SemanticToken;
 
@@ -307,7 +311,7 @@ typedef struct {
     const char *file;         // source file containing this occurrence
     uint32_t    line;         // 1-based
     uint32_t    col;          // 1-based; start of the old name
-    uint32_t    old_name_len; // byte length of the name to replace
+    uint32_t    old_name_len; // UTF-16 code-unit length of the name to replace
     const char *new_name;     // replacement text
 } CB_RenameEdit;
 

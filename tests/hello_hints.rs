@@ -1,101 +1,102 @@
-//! Integration test: inlay hints for the cpp/hello example.
-//! Compares clang-bridge output against what clangd produces for the same file.
+//! Integration test: inlay hints on a self-contained C++ source.
+//!
+//! Exercises the clang-bridge hint behaviours that matter for the LSP:
+//! user-function parameter-name hints, constructor argument hints, filtering of
+//! system-header (`std::…`) call hints, and never leaking internal `__name`s.
+//!
+//! This used to parse the `cpp/hello` example by absolute path, but that file
+//! now uses `import std;` — which needs a prebuilt std-module BMI a bridge test
+//! can't supply (so every `std::` symbol becomes undeclared and the AST yields
+//! no hints). The source is inlined here for a stable, hermetic check.
 
 use clang_bridge::{inlay, Index};
 
-const HELLO: &str =
-    "/home/max/freight-workspace/crates/freight/examples/cpp/hello";
+const SRC: &str = r#"
+#include <utility>
+#include <cmath>
 
-fn compile_flags() -> Vec<&'static str> {
-    vec![
-        "-std=c++20",
-        "-Iinc",
-        "-I.pkgs/mathlib/include",
-        "-I.pkgs/vecmath/include",
-        "-Wno-gnu-include-next",
-    ]
+namespace stats {
+double mean(const double values[], int n);
+double variance(const double values[], int n);
 }
 
-fn main_tu() -> (clang_bridge::TranslationUnit, clang_bridge::Index) {
-    let idx = Index::new();
-    let file = format!("{HELLO}/src/main.cpp");
-    let tu = idx
-        .parse(&file, HELLO, &compile_flags())
-        .expect("failed to parse main.cpp — check flags and include paths");
-    (tu, idx)
+struct Vec2 {
+    double x, y;
+    Vec2(double x, double y) : x(x), y(y) {}
+};
+
+int main() {
+    double data[8] = {2, 4, 4, 4, 5, 5, 7, 9};
+
+    // User-defined functions → parameter-name hints ("values:", "n:").
+    double m = stats::mean(data, 8);
+    double v = stats::variance(data, 8);
+
+    // System-header call (std::sqrt) → its parameter hint must be filtered.
+    double s = std::sqrt(v);
+
+    // Constructor with named params → x:, y: hints.
+    Vec2 g(1, 1);
+
+    (void) m;
+    (void) v;
+    (void) s;
+    (void) g;
+    return 0;
+}
+"#;
+
+fn parse() -> Option<clang_bridge::TranslationUnit> {
+    Index::new().parse_unsaved("/tmp/cb_hello_hints.cpp", "", SRC, &["-std=c++20"])
 }
 
 #[test]
-fn no_parse_errors_on_hello_main() {
-    let idx = Index::new();
-    let file = format!("{HELLO}/src/main.cpp");
-    let result = idx.parse(&file, HELLO, &compile_flags());
+fn no_parse_errors() {
     assert!(
-        result.is_some(),
-        "Index::parse returned None for main.cpp — fatal parse error. \
-         Verify stddef.h is found (resource-dir fix) and stats.hpp is \
-         reachable (-Iinc flag applied)."
+        parse().is_some(),
+        "parse returned None — system headers <utility>/<cmath> must be reachable"
     );
 }
 
 #[test]
-fn clang_bridge_hints_for_hello_main() {
-    let (tu, _idx) = main_tu();
-
-    // Request hints for the full file (lines 1–35, 1-based).
-    let hints = inlay::inlay_hints(&tu, 1, 35);
+fn clang_bridge_inlay_hints() {
+    let tu = parse().expect("failed to parse inline source");
+    let n_lines = SRC.lines().count() as u32;
+    let hints = inlay::inlay_hints(&tu, 1, n_lines);
     let all: Vec<_> = hints.iter().collect();
 
-    println!("\n=== clang-bridge inlay hints for cpp/hello/src/main.cpp ===");
-    if all.is_empty() {
-        println!("  (none)");
-    }
+    println!("\n=== clang-bridge inlay hints (inline hello source) ===");
     for h in &all {
-        let kind_str = if h.kind == 0 { "param" } else { "type" };
+        let kind = if h.kind == 0 { "param" } else { "type" };
         println!(
             "  line {:2} col {:2} [{}]: {:?}",
-            h.line, h.col, kind_str, h.label
+            h.line, h.col, kind, h.label
         );
     }
 
-    // ── Clangd ground-truth: we should produce ──────────────────────────────
-    //  line 12: "values:" for mean(data) and variance(data)  (user-defined fns)
-    //  NO hints for std::pair ctor or std::sqrt (system headers, filtered)
-    //  NO "__x:" style internal-name hints
-
-    let values_hints: Vec<_> = all
+    // `values:` parameter-name hints for the two user-function calls.
+    let values = all
         .iter()
         .filter(|h| h.kind == 0 && h.label == "values:")
-        .collect();
-    assert_eq!(
-        values_hints.len(),
-        2,
-        "expected 2 'values:' hints for mean(data) and variance(data), got {}",
-        values_hints.len()
-    );
+        .count();
+    assert_eq!(values, 2, "expected 2 'values:' hints, got {values}");
 
-    // Internal-name hints must never appear.
+    // Internal `__name`-style hints must never leak.
     let bad: Vec<_> = all.iter().filter(|h| h.label.starts_with("__")).collect();
     assert!(
         bad.is_empty(),
         "internal parameter-name hints leaked: {bad:?}"
     );
 
-    // Constructor hints: Vec2(1,1) should produce x: and y:.
-    let xy_hints: Vec<_> = all
+    // Constructor `x:` / `y:` hints for `Vec2(1, 1)`.
+    let xy = all
         .iter()
         .filter(|h| h.kind == 0 && (h.label == "x:" || h.label == "y:"))
-        .collect();
-    assert!(
-        xy_hints.len() >= 2,
-        "expected at least 2 x:/y: hints for Vec2(1,1) constructor, got {}",
-        xy_hints.len()
+        .count();
+    assert!(xy >= 2, "expected >=2 x:/y: hints, got {xy}");
+
+    println!(
+        "\nSummary: {} hints, {values} values:, {xy} x:/y:",
+        all.len()
     );
-
-    // NOTE (gap): structured-binding type hints emit ': std::pair<double,double>'
-    // for the hidden tuple variable rather than per-binding ': double'.
-    // BindingDecl is not visited by VisitVarDecl; this is a documented limitation.
-
-    println!("\nSummary: {} total hints, {} values: hints, {} x:/y: hints",
-             all.len(), values_hints.len(), xy_hints.len());
 }

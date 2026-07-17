@@ -9,7 +9,7 @@ int cb_goto_definition(CB_TransUnit *tu, uint32_t line, uint32_t col,
     const NamedDecl *ND = locate_symbol_at(tu->ast.get(), line, col);
     if (!ND) {
         // Macro fallback: jump to the `#define` of the macro under the cursor.
-        SourceLocation target = SM.translateLineCol(SM.getMainFileID(), line, col);
+        SourceLocation target = translate_line_col_utf16(SM, SM.getMainFileID(), line, col);
         if (!target.isValid()) return 0;
         Token tok;
         if (Lexer::getRawToken(target, tok, SM, Ctx.getLangOpts(),
@@ -26,7 +26,7 @@ int cb_goto_definition(CB_TransUnit *tu, uint32_t line, uint32_t col,
         if (!mp.isValid()) return 0;
         out->file = strdup(mp.getFilename() ? mp.getFilename() : "");
         out->line = (uint32_t)mp.getLine();
-        out->col  = (uint32_t)mp.getColumn();
+        out->col  = source_location_utf16_col(SM, MI->getDefinitionLoc());
         return 1;
     }
 
@@ -43,9 +43,8 @@ int cb_goto_definition(CB_TransUnit *tu, uint32_t line, uint32_t col,
 
     out->file = strdup(ploc.getFilename() ? ploc.getFilename() : "");
     out->line = (uint32_t)ploc.getLine();
-    out->col  = (uint32_t)ploc.getColumn();
+    out->col  = source_location_utf16_col(SM, target->getLocation());
     return 1;
 }
 
 // ── Code completion ───────────────────────────────────────────────────────────
-

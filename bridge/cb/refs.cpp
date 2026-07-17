@@ -41,9 +41,10 @@ public:
         auto p = SM->getPresumedLoc(Loc);
         if (!p.isValid()) return true;
 
+        uint32_t utf16_col = source_location_utf16_col(*SM, Loc);
         std::string key = std::string(p.getFilename() ? p.getFilename() : "")
                         + ":" + std::to_string(p.getLine())
-                        + ":" + std::to_string(p.getColumn());
+                        + ":" + std::to_string(utf16_col);
         if (!seen.insert(key).second) return true;
 
         using SR = index::SymbolRole;
@@ -52,7 +53,7 @@ public:
         ReferenceEntry e;
         e.file          = p.getFilename() ? p.getFilename() : "";
         e.line          = p.getLine();
-        e.col           = p.getColumn();
+        e.col           = utf16_col;
         e.is_definition = is_def;
         refs.push_back(std::move(e));
         return true;
@@ -176,7 +177,7 @@ CB_RenameList *cb_rename(CB_TransUnit *tu, const char *usr,
         e.file         = ref.file;
         e.line         = ref.line;
         e.col          = ref.col;
-        e.old_name_len = (uint32_t)old_name.size();
+        e.old_name_len = utf16_length(old_name);
         e.new_name     = new_name;
         list->edits.push_back(std::move(e));
     }
@@ -245,15 +246,21 @@ public:
         if (SM->getFileID(Loc) != main_fid) return true;
         auto p = SM->getPresumedLoc(Loc);
         if (!p.isValid()) return true;
+        uint32_t col = source_location_utf16_col(*SM, Loc);
         std::string key = std::to_string(p.getLine()) + ":"
-                        + std::to_string(p.getColumn());
+                        + std::to_string(col);
         if (!seen.insert(key).second) return true;
         unsigned tok_len = Lexer::MeasureTokenLength(Loc, *SM, LO);
+        bool invalid = false;
+        const char *tok_data = SM->getCharacterData(Loc, &invalid);
+        uint32_t utf16_tok_len = invalid || !tok_data
+                                     ? tok_len
+                                     : utf16_length(StringRef(tok_data, tok_len));
         using SR = index::SymbolRole;
         bool is_write = (Roles & ((index::SymbolRoleSet)SR::Definition |
                                    (index::SymbolRoleSet)SR::Write)) != 0;
-        out.push_back({p.getLine(), p.getColumn(),
-                       p.getColumn() + tok_len, is_write ? (uint8_t)3 : (uint8_t)2});
+        out.push_back({p.getLine(), col, col + utf16_tok_len,
+                       is_write ? (uint8_t)3 : (uint8_t)2});
         return true;
     }
 };

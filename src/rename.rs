@@ -10,7 +10,7 @@ pub struct RenameEdit {
     pub line: u32,
     /// 1-based column; start of the old name.
     pub col: u32,
-    /// Byte length of the old name (the text to replace).
+    /// UTF-16 code-unit length of the old name (the text to replace).
     pub old_name_len: u32,
     /// The new name to insert.
     pub new_name: String,

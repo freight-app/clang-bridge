@@ -159,7 +159,8 @@ public:
         e.parent = parent;
         auto sr = ND->getSourceRange();
         if (auto p = SM.getPresumedLoc(sr.getBegin()); p.isValid()) {
-            e.range_start_line = p.getLine(); e.range_start_col = p.getColumn();
+            e.range_start_line = p.getLine();
+            e.range_start_col = source_location_utf16_col(SM, sr.getBegin());
         }
         // LSP ranges are half-open: the end points one-past the last token.
         // sr.getEnd() is the *start* of the last token, so advance to its end
@@ -168,10 +169,12 @@ public:
             Lexer::getLocForEndOfToken(sr.getEnd(), 0, SM, Ctx.getLangOpts());
         if (endTok.isInvalid()) endTok = sr.getEnd();
         if (auto p = SM.getPresumedLoc(endTok); p.isValid()) {
-            e.range_end_line = p.getLine(); e.range_end_col = p.getColumn();
+            e.range_end_line = p.getLine();
+            e.range_end_col = source_location_utf16_col(SM, endTok);
         }
         if (auto p = SM.getPresumedLoc(ND->getLocation()); p.isValid()) {
-            e.sel_line = p.getLine(); e.sel_col = p.getColumn();
+            e.sel_line = p.getLine();
+            e.sel_col = source_location_utf16_col(SM, ND->getLocation());
         }
         int32_t idx = static_cast<int32_t>(entries.size());
         decl_to_idx[ND] = idx;
@@ -339,6 +342,5 @@ void cb_doc_sym_get(const CB_DocSymList *list, size_t i, CB_DocSym *out) {
 }
 
 void cb_doc_sym_list_destroy(CB_DocSymList *list) { delete list; }
-
 
 

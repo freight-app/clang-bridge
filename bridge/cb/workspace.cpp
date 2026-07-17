@@ -21,7 +21,7 @@ class WorkspaceIndexer : public RecursiveASTVisitor<WorkspaceIndexer> {
         e.kind   = declKind(D);
         e.file   = ploc.getFilename() ? ploc.getFilename() : "";
         e.line   = ploc.getLine();
-        e.col    = ploc.getColumn();
+        e.col    = source_location_utf16_col(SM, D->getLocation());
         e.usr    = buf.str().str();
         std::string lower = name.lower();
         idx->sym_index.emplace(std::move(lower), std::move(e));

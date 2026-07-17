@@ -20,7 +20,7 @@ pub struct SemanticToken {
     pub line: u32,
     /// 1-based column.
     pub col: u32,
-    /// Name length in characters.
+    /// Name length in UTF-16 code units.
     pub length: u32,
     /// One of the `tok_type::*` constants.
     pub token_type: u8,

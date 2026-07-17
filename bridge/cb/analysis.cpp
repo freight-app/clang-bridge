@@ -51,8 +51,8 @@ static void collect_inclusions(ASTUnit *ast,
         e.including_file = presumed.getFilename() ? presumed.getFilename() : "";
         e.included_file  = included;
         e.line      = presumed.getLine();
-        e.start_col = presumed.getColumn();
-        e.end_col   = presumed.getColumn();
+        e.start_col = source_location_utf16_col(SM, incLoc);
+        e.end_col   = e.start_col;
         {
             bool invalid = false;
             const char *buf = SM.getCharacterData(incLoc, &invalid);
@@ -62,12 +62,17 @@ static void collect_inclusions(ASTUnit *ast,
                     if (buf[off] == '\n' || buf[off] == '\0') break;
                     if (buf[off] == '"' || buf[off] == '<') {
                         char close = (buf[off] == '"') ? '"' : '>';
-                        uint32_t start = (uint32_t)presumed.getColumn() + (uint32_t)off;
+                        SourceLocation startLoc = incLoc.getLocWithOffset(off);
+                        uint32_t start = source_location_utf16_col(SM, startLoc);
                         // Find the closing delimiter.
                         uint32_t end = start + 1;
                         for (int k = off + 1; k < 256; ++k) {
                             if (buf[k] == '\n' || buf[k] == '\0') break;
-                            if (buf[k] == close) { end = (uint32_t)presumed.getColumn() + (uint32_t)k + 1; break; }
+                            if (buf[k] == close) {
+                                SourceLocation endLoc = incLoc.getLocWithOffset(k + 1);
+                                end = source_location_utf16_col(SM, endLoc);
+                                break;
+                            }
                         }
                         e.start_col = start;
                         e.end_col   = end;
@@ -165,14 +170,13 @@ public:
         auto p = SM.getPresumedLoc(loc);
         if (!p.isValid()) return;
 
-        // Length = number of characters in the name.
         StringRef name = safeDeclName(D);
         if (name.empty()) return;
 
         SemanticTokenEntry t;
         t.line       = p.getLine();
-        t.col        = p.getColumn();
-        t.length     = (uint32_t)name.size();
+        t.col        = source_location_utf16_col(SM, loc);
+        t.length     = utf16_length(name);
         t.token_type = semtokForDecl(D);
         tokens.push_back(t);
     }
@@ -266,8 +270,8 @@ CB_SemanticTokenList *cb_semantic_tokens(CB_TransUnit *tu) {
 
         SemanticTokenEntry t;
         t.line       = p.getLine();
-        t.col        = p.getColumn();
-        t.length     = (uint32_t)spelling.size();
+        t.col        = source_location_utf16_col(SM, expansionLoc);
+        t.length     = utf16_length(spelling);
         t.token_type = CB_TOK_MACRO;
         list->tokens.push_back(t);
     }
@@ -285,8 +289,8 @@ CB_SemanticTokenList *cb_semantic_tokens(CB_TransUnit *tu) {
         if (!p.isValid()) continue;
         SemanticTokenEntry t;
         t.line       = p.getLine();
-        t.col        = p.getColumn();
-        t.length     = (uint32_t)II->getLength();
+        t.col        = source_location_utf16_col(SM, sp);
+        t.length     = utf16_length(II->getName());
         t.token_type = CB_TOK_MACRO;
         list->tokens.push_back(t);
     }

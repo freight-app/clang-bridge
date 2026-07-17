@@ -35,7 +35,7 @@ CB_CallHierItem *cb_call_hierarchy_prepare(CB_TransUnit *tu,
     if (ploc.isValid()) {
         item->file = ploc.getFilename() ? ploc.getFilename() : "";
         item->line = ploc.getLine();
-        item->col  = ploc.getColumn();
+        item->col  = source_location_utf16_col(SM, ND->getLocation());
     }
     return item;
 }
@@ -95,10 +95,13 @@ public:
             e.detail    = callee->getQualifiedNameAsString();
             e.file      = defLoc.isValid() && defLoc.getFilename() ? defLoc.getFilename() : "";
             e.line      = defLoc.isValid() ? defLoc.getLine()   : 0;
-            e.col       = defLoc.isValid() ? defLoc.getColumn() : 0;
+            e.col       = defLoc.isValid()
+                              ? source_location_utf16_col(SM, callee->getLocation())
+                              : 0;
             e.usr       = funcUSR(callee);
             e.call_line = callLoc.getLine();
-            e.call_col  = callLoc.getColumn();
+            e.call_col  = source_location_utf16_col(
+                SM, SM.getSpellingLoc(CE->getBeginLoc()));
             out.push_back(std::move(e));
         } else {
             if (funcUSR(callee) != target_usr) return true;
@@ -109,10 +112,13 @@ public:
             e.detail    = caller->getQualifiedNameAsString();
             e.file      = callerLoc.isValid() && callerLoc.getFilename() ? callerLoc.getFilename() : "";
             e.line      = callerLoc.isValid() ? callerLoc.getLine()   : 0;
-            e.col       = callerLoc.isValid() ? callerLoc.getColumn() : 0;
+            e.col       = callerLoc.isValid()
+                              ? source_location_utf16_col(SM, caller->getLocation())
+                              : 0;
             e.usr       = funcUSR(caller);
             e.call_line = callLoc.getLine();
-            e.call_col  = callLoc.getColumn();
+            e.call_col  = source_location_utf16_col(
+                SM, SM.getSpellingLoc(CE->getBeginLoc()));
             out.push_back(std::move(e));
         }
         return true;
@@ -204,7 +210,7 @@ CB_TypeHierItem *cb_type_hierarchy_prepare(CB_TransUnit *tu,
     if (ploc.isValid()) {
         item->file = ploc.getFilename() ? ploc.getFilename() : "";
         item->line = ploc.getLine();
-        item->col  = ploc.getColumn();
+        item->col  = source_location_utf16_col(SM, RD->getLocation());
     }
     return item;
 }
@@ -236,7 +242,8 @@ CB_TypeHierList *cb_supertypes(CB_TransUnit *tu, const char *usr) {
         auto p = SM.getPresumedLoc(B->getLocation());
         if (p.isValid()) {
             e.file = p.getFilename() ? p.getFilename() : "";
-            e.line = p.getLine(); e.col = p.getColumn();
+            e.line = p.getLine();
+            e.col = source_location_utf16_col(SM, B->getLocation());
         }
         list->entries.push_back(std::move(e));
     }
@@ -271,7 +278,8 @@ CB_TypeHierList *cb_subtypes(CB_TransUnit *tu, const char *usr) {
                 auto p = SM.getPresumedLoc(D->getLocation());
                 if (p.isValid()) {
                     e.file = p.getFilename() ? p.getFilename() : "";
-                    e.line = p.getLine(); e.col = p.getColumn();
+                    e.line = p.getLine();
+                    e.col = source_location_utf16_col(SM, D->getLocation());
                 }
                 out.push_back(std::move(e));
                 break;

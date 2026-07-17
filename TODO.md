@@ -123,3 +123,182 @@ All LSP methods needed for freight's C/C++ language server are implemented:
 | `workspace/symbol` | `cb_workspace_symbols` |
 | Parse from memory | `cb_parse_unsaved` |
 | Parse error reporting | `cb_index_last_error` |
+
+---
+
+## Remaining — the road to default-on
+
+**End goal:** the bridge becomes the *default* C/C++ backend in `freight lsp`
+(clangd demoted to escape hatch). Gate: every method differentially verified
+against clangd with zero unexplained regressions, **and** typing latency on a
+real project is competitive with clangd.
+
+API coverage is done (table above). What's left falls into four buckets:
+known-broken things, unverified things, performance/UX changes, and missing
+features. Roughly in priority order:
+
+---
+
+### 1. Still broken / known risks
+
+- [ ] **Per-keystroke full reparse — preamble precompilation is disabled.**
+      `core.cpp` passes `PrecompilePreambleAfterNParses=0` to
+      `ASTUnit::LoadFromCompilerInvocation`, so every `didChange` re-lexes and
+      re-parses *all included headers* from scratch. This is the single
+      biggest UX gap vs clangd (which rebuilds only the post-preamble region
+      on edit). **Fix:** set `PrecompilePreambleAfterNParses=1` so `Reparse`
+      reuses a precompiled preamble; verify the B-23-style SourceManager
+      corruption doesn't resurface (completion runs on a fresh SourceManager —
+      retest that interaction); measure on a TU including `<iostream>`.
+- [ ] **Synchronous reparse on the LSP loop.** `freight/src/lsp/mod.rs`
+      reparses on *every* `didChange` (full-text sync, no debounce) before
+      handling the next message — fast typists queue up parses and every
+      other request (hover, completion) waits behind them. **Fix (freight
+      side):** debounce (~150 ms) + drop stale reparses when a newer text
+      version is queued; longer-term move parsing to a worker thread with
+      version-checked cancellation (TU is single-thread-only — keep one
+      worker per TU).
+- [ ] **Concurrent initial parses race through the process working directory.**
+      `ClangTool::run` temporarily changes CWD to each compilation command's
+      directory. Independent parses on different threads can therefore resolve
+      relative paths against the wrong project or fail while restoring a
+      concurrently removed temporary directory. The UTF-16 fixture serializes
+      its parse calls to stay deterministic, but the bridge needs a production
+      fix before parse workers are introduced: preferably stop using
+      process-CWD-changing `ClangTool::run`; otherwise guard the operation with
+      a documented global parse mutex.
+- [ ] **In-process crash = whole-server crash.** A clang assertion or
+      segfault on malformed input takes down `freight lsp` *for all
+      languages* — clangd being a subprocess means an editor only loses one
+      server. **Fix:** decide a containment strategy before default-on:
+      (a) catch fatal LLVM errors via `llvm::install_fatal_error_handler` +
+      longjmp-free unwind to an error return, (b) optional out-of-process
+      bridge mode for hardening, or at minimum (c) crash-telemetry +
+      auto-restart guidance in the freight LSP supervisor.
+- [x] **UTF-16 position encoding** (2026-07-17) — LSP columns are UTF-16 code
+      units, while clang emits/consumes byte columns. Shared helpers in
+      `symbol.cpp` now handle both boundaries: `utf16_to_byte_col` and
+      `translate_line_col_utf16` for incoming positions, plus
+      `source_location_utf16_col` and `utf16_length` for outgoing positions and
+      lengths.
+      - **Incoming** — every cursor position is converted at the boundary:
+        `locate_symbol_at` converts `col` once up front (covers hover,
+        references, rename, call/type hierarchy, symbol_at), and the
+        direct-translate fallbacks in `goto.cpp`/`inlay.cpp`/`extra.cpp` use
+        `translate_line_col_utf16`. So clicking a symbol on a multi-byte line
+        now lands on the right token. Test:
+        `symbol_lookup::symbol_at_uses_utf16_columns`.
+      - **Outgoing** — definitions, references, rename edits, document and
+        workspace symbols, diagnostics/fix-its, code actions, AST dump,
+        inclusion ranges, inlay hints, and call/type hierarchy results emit
+        UTF-16 columns. Rename lengths, semantic-token lengths, and macro/header
+        spans are UTF-16 code units.
+      - **Semantic tokens** — `emitToken` emits UTF-16 col + length. Test:
+        `semtok::semantic_token_columns_are_utf16`.
+      - Regression coverage: `tests/utf16_positions.rs` exercises navigation,
+        symbols, hierarchy, inlay hints, diagnostics/fix-its, AST output, and
+        Unicode inclusion ranges with BMP and surrogate-pair characters.
+- [ ] **Diagnostics from headers are dropped silently.** `Clang.rs::diagnostics`
+      filters to `d.file == <main file>`, so an error *caused* by the open
+      file but *reported* in an included header vanishes entirely. clangd
+      surfaces these as "In included file: …" anchored on the `#include`
+      line. **Fix:** map header diagnostics to the including `#include`
+      directive in the main file (the inclusion chain is available via
+      `cb_inclusions`/SourceManager).
+- [ ] **Semantic-token cosmetic gaps** (accepted in B-24, revisit before
+      default-on): `auto` not coloured as deduced type; `geo::`-style
+      nested-name-specifier qualifiers unvisited since clang 22 dropped
+      `ElaboratedType`.
+- [ ] **Q-4: call hierarchy on lambdas** — `prepare` bails on anything that
+      isn't a `FunctionDecl`; lambdas are `CXXRecordDecl`s with `operator()`.
+
+### 2. Differential verification vs clangd (the default-on gate)
+
+Reuse the clangd JSON-RPC oracle harness from the 2026-06-10 audit
+(`/tmp/clangd_probe.py` pattern: initialize → didOpen → query → diff):
+
+- [ ] **Diagnostics** — message/range/severity/relatedInformation. clangd
+      publishes these *asynchronously* after didOpen: the harness must pump the
+      raw fd (Python's buffered stream deadlocks).
+- [ ] **Signature help** — active-parameter tracking through nested/partial calls.
+- [ ] **Hover** — content + range parity (markdown shape may differ; diff the
+      facts: signature, doc, type).
+- [ ] **Call/type hierarchy** — edge sets on the fixture hierarchy.
+- [ ] **Completion** — item kinds/details/sort order on member access and `::`.
+- [ ] **Formatting** — output equality under the same `.clang-format`.
+- [ ] **Cross-file / multi-TU** — references/workspace symbols spanning TUs via
+      `cb_workspace_index_add`; current fixtures only cross into `shapes.h`.
+- [ ] **Soak test** — drive both servers with a recorded real editing session
+      (the `scripts/lsp_hints_compare.py` approach generalised) and diff every
+      response, not just single-shot queries.
+
+### 3. User-experience changes (latency + ergonomics)
+
+Beyond the reparse items in §1:
+
+- [ ] **Completion latency budget.** Completion re-runs code-complete on a
+      fresh SourceManager per request (post-B-23). Measure p50/p95 on a
+      `<vector>`-heavy TU; if >100 ms, the preamble work in §1 is the lever
+      (clang's code-complete also reuses the preamble).
+- [ ] **TU memory cap.** `Clang.rs` keeps one live `ASTUnit` per opened file,
+      evicted only on `didClose`. A long session over many files holds
+      hundreds of MB. Add an LRU (keep N hottest TUs, e.g. 4–8; re-parse on
+      revisit) — clangd's `--background-index` + idle-AST limit is the model.
+- [ ] **Goto-definition result range is a zero-width point** (start == end).
+      Editors highlight nothing on landing. Return the full identifier token
+      range (use `Lexer::getLocForEndOfToken`, as document_symbols already does).
+- [ ] **Progress + status surfacing.** Long first-parses are invisible — the
+      editor just shows nothing. Emit `$/progress` (work-done) from freight
+      around initial parse / refresh_flags, and a status-bar state
+      (parsing/idle/error) the VS Code extension can show.
+- [ ] **Stale-flag refresh.** `refresh_flags` clears *all* TUs whenever
+      compile_commands changes → every open file re-parses at once. Only
+      evict TUs whose flags actually changed.
+
+### 4. Missing features worth adding (clangd has them, users notice)
+
+- [ ] **Stock code actions** (Q-3): today only diagnostic fix-its surface.
+      Highest-value additions, in order: "add missing `#include`" (pairs
+      naturally with freight's include-hygiene classification — it knows the
+      owning package), "organize/sort includes", "expand `auto`",
+      "swap if branches", "extract variable/function" (Sema-heavy; last).
+- [ ] **Completion: auto-insert the `#include`** for symbols completed from
+      headers not yet included (clangd's include-insertion). Freight angle:
+      restrict candidates to *declared* packages — this is the include-hygiene
+      story applied to completion, and would be *better* than clangd.
+- [ ] **Snippet completions** — function completions currently insert the bare
+      name; emit LSP snippet format with `($1)` placeholders + signature
+      in the detail, honouring the client's `snippetSupport` capability.
+- [ ] **`semanticTokens/range` + `/full/delta`** — VS Code requests range
+      tokens for the viewport first; without it, large files colour late.
+      Delta avoids re-sending the full token list per keystroke.
+- [ ] **Inactive-region greying** — clangd's `textDocument/inactiveRegions`
+      extension (preprocessor-disabled blocks). The preprocessor data is
+      already available; the VS Code extension needs the client half.
+- [ ] **`textDocument/selectionRange`** (smart expand-selection) and
+      **`linkedEditingRange`** — cheap AST walks, high perceived polish.
+- [ ] **`onTypeFormatting`** for `}`/`;`/newline via clang-format's
+      incremental mode.
+- [ ] **Background project index** — references/rename/workspace-symbols are
+      currently scoped to *opened* TUs plus `cb_workspace_index_add` calls.
+      Index all manifest sources idle-time (freight knows the exact file set —
+      no compile_commands guessing like clangd) so rename is truly
+      project-wide on first use.
+- [ ] **IH-14: designated-initializer inlay hints** (`.field =`) — the one
+      clangd inlay-hint kind still missing (needs clang-tidy-style machinery
+      or an inline reimplementation).
+
+### 5. Test debt (from the audit rounds)
+
+- [x] Position-encoding fixture (multi-byte UTF-8) —
+      `tests/utf16_positions.rs`, `tests/semtok.rs`, and
+      `tests/symbol_lookup.rs` cover incoming and outgoing positions with BMP
+      and surrogate-pair characters.
+- [ ] Multi-TU workspace fixture (two `.cpp` + shared header) covering
+      cross-TU references, rename, and workspace symbols after reparse
+      (Q-5 regression: no duplicate entries).
+- [ ] Preamble-reuse regression tests once §1 lands: reparse-after-edit
+      correctness near the preamble boundary (edit the first `#include` line),
+      and completion-after-reparse (B-23 interaction).
+- [ ] Latency micro-bench (criterion or a timed test) for reparse + completion
+      on a `<vector>`/`<iostream>` TU, so §3 regressions are caught.

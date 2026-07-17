@@ -18,13 +18,37 @@ fn symbol_at_resolves_function_declaration() {
     }
 
     let idx = Index::new();
-    let tu = idx.parse(path.to_str().unwrap(), "", &["-std=c++17"]).unwrap();
+    let tu = idx
+        .parse(path.to_str().unwrap(), "", &["-std=c++17"])
+        .unwrap();
 
     // Line 2, column 5 should hit `multiply`.
     let sym = tu.symbol_at(2, 5).expect("expected symbol at (2,5)");
     assert_eq!(sym.name(), "multiply");
     assert_eq!(sym.kind(), "function");
     assert!(!sym.signature().is_empty());
+}
+
+#[test]
+fn symbol_at_uses_utf16_columns() {
+    // `ä` is 2 UTF-8 bytes but 1 UTF-16 code unit. The client sends a UTF-16
+    // column for the `value` reference; without converting it to a byte column
+    // the lookup lands past the identifier and resolves nothing/wrong.
+    let src = "int value = 1; int main() { /* ä */ return value; }";
+    let path = write_temp("cb_utf16_lookup.cpp", src);
+    let idx = Index::new();
+    let tu = idx
+        .parse(path.to_str().unwrap(), "", &["-std=c++17"])
+        .unwrap();
+
+    // 1-based UTF-16 column of the second `value` (the reference).
+    let ref_byte = src.rfind("value").unwrap();
+    let utf16_col = src[..ref_byte].encode_utf16().count() as u32 + 1;
+
+    let sym = tu
+        .symbol_at(1, utf16_col)
+        .expect("expected `value` at its UTF-16 column");
+    assert_eq!(sym.name(), "value");
 }
 
 #[test]
@@ -35,7 +59,9 @@ fn symbol_at_resolves_variable_reference() {
     // x use:         col 25 ("return x")
     let path = write_temp("cb_sym_varref.cpp", src);
     let idx = Index::new();
-    let tu = idx.parse(path.to_str().unwrap(), "", &["-std=c++17"]).unwrap();
+    let tu = idx
+        .parse(path.to_str().unwrap(), "", &["-std=c++17"])
+        .unwrap();
 
     let sym = tu.symbol_at(1, 25).expect("expected symbol at use site");
     assert_eq!(sym.name(), "x", "expected param 'x', got '{}'", sym.name());
@@ -49,10 +75,19 @@ fn symbol_at_resolves_member_access() {
     //                                           ^ col 31 = 'y'
     let path = write_temp("cb_sym_member.cpp", src);
     let idx = Index::new();
-    let tu = idx.parse(path.to_str().unwrap(), "", &["-std=c++17"]).unwrap();
+    let tu = idx
+        .parse(path.to_str().unwrap(), "", &["-std=c++17"])
+        .unwrap();
 
-    let sym = tu.symbol_at(2, 31).expect("expected symbol at member access");
-    assert_eq!(sym.name(), "Point::y", "expected 'Point::y', got '{}'", sym.name());
+    let sym = tu
+        .symbol_at(2, 31)
+        .expect("expected symbol at member access");
+    assert_eq!(
+        sym.name(),
+        "Point::y",
+        "expected 'Point::y', got '{}'",
+        sym.name()
+    );
 }
 
 #[test]
@@ -63,26 +98,42 @@ fn symbol_at_resolves_type_reference() {
     //          ^ col 1 = 'P' of 'Point'
     let path = write_temp("cb_sym_typeref.cpp", src);
     let idx = Index::new();
-    let tu = idx.parse(path.to_str().unwrap(), "", &["-std=c++17"]).unwrap();
+    let tu = idx
+        .parse(path.to_str().unwrap(), "", &["-std=c++17"])
+        .unwrap();
 
-    let sym = tu.symbol_at(2, 1).expect("expected symbol at type reference");
-    assert_eq!(sym.name(), "Point", "expected 'Point', got '{}'", sym.name());
+    let sym = tu
+        .symbol_at(2, 1)
+        .expect("expected symbol at type reference");
+    assert_eq!(
+        sym.name(),
+        "Point",
+        "expected 'Point', got '{}'",
+        sym.name()
+    );
 }
 
 #[test]
 fn goto_resolves_to_definition_from_call_site() {
     // `square` is declared on line 1, defined on line 2.
     // Cursor is on the *call site* on line 3 — goto should still reach line 2.
-    let src = "int square(int x);\nint square(int x) { return x * x; }\nint main() { return square(3); }";
+    let src =
+        "int square(int x);\nint square(int x) { return x * x; }\nint main() { return square(3); }";
     // Line 3: "int main() { return square(3); }"
     //                              ^ col 21 = 's' of 'square'
     let path = write_temp("cb_goto_callsite.cpp", src);
     let idx = Index::new();
-    let tu = idx.parse(path.to_str().unwrap(), "", &["-std=c++17"]).unwrap();
+    let tu = idx
+        .parse(path.to_str().unwrap(), "", &["-std=c++17"])
+        .unwrap();
 
     let loc = clang_bridge::goto::goto_definition(&tu, 3, 21)
         .expect("expected definition from call site");
-    assert_eq!(loc.line, 2, "expected definition on line 2, got {}", loc.line);
+    assert_eq!(
+        loc.line, 2,
+        "expected definition on line 2, got {}",
+        loc.line
+    );
 }
 
 #[test]
@@ -93,9 +144,13 @@ fn symbol_at_constructor_call_site() {
     //                     ^ col 12 = 'M' of 'MyClass'
     let path = write_temp("cb_sym_ctor_call.cpp", src);
     let idx = Index::new();
-    let tu = idx.parse(path.to_str().unwrap(), "", &["-std=c++17"]).unwrap();
+    let tu = idx
+        .parse(path.to_str().unwrap(), "", &["-std=c++17"])
+        .unwrap();
 
-    let sym = tu.symbol_at(2, 12).expect("expected symbol at constructor call");
+    let sym = tu
+        .symbol_at(2, 12)
+        .expect("expected symbol at constructor call");
     // Should resolve to the constructor (name = "MyClass::MyClass" or just "MyClass")
     assert!(
         sym.name().contains("MyClass"),

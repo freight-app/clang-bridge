@@ -54,15 +54,21 @@ CB_DiagIter *cb_diag_iter(CB_TransUnit *tu) {
         if (ploc.isValid()) {
             e.file = ploc.getFilename() ? ploc.getFilename() : "";
             e.line = e.end_line = (uint32_t)ploc.getLine();
-            e.col  = e.end_col  = (uint32_t)ploc.getColumn();
+            e.col = e.end_col = source_location_utf16_col(SM, sd.getLocation());
         }
 
         // Expand squiggle range from the first reported source range.
         for (const auto &range : sd.getRanges()) {
             auto sl = SM.getPresumedLoc(range.getBegin());
             auto el = SM.getPresumedLoc(range.getEnd());
-            if (sl.isValid()) { e.line = sl.getLine(); e.col = sl.getColumn(); }
-            if (el.isValid()) { e.end_line = el.getLine(); e.end_col = el.getColumn(); }
+            if (sl.isValid()) {
+                e.line = sl.getLine();
+                e.col = source_location_utf16_col(SM, range.getBegin());
+            }
+            if (el.isValid()) {
+                e.end_line = el.getLine();
+                e.end_col = source_location_utf16_col(SM, range.getEnd());
+            }
             break; // first range is sufficient
         }
 
@@ -74,8 +80,14 @@ CB_DiagIter *cb_diag_iter(CB_TransUnit *tu) {
             FixItEntry f;
             auto sl = SM.getPresumedLoc(fixit.RemoveRange.getBegin());
             auto el = SM.getPresumedLoc(fixit.RemoveRange.getEnd());
-            if (sl.isValid()) { f.start_line = sl.getLine(); f.start_col = sl.getColumn(); }
-            if (el.isValid()) { f.end_line   = el.getLine(); f.end_col   = el.getColumn(); }
+            if (sl.isValid()) {
+                f.start_line = sl.getLine();
+                f.start_col = source_location_utf16_col(SM, fixit.RemoveRange.getBegin());
+            }
+            if (el.isValid()) {
+                f.end_line = el.getLine();
+                f.end_col = source_location_utf16_col(SM, fixit.RemoveRange.getEnd());
+            }
             f.replacement = fixit.CodeToInsert;
             e.fixits.push_back(std::move(f));
         }
@@ -115,4 +127,3 @@ void cb_diag_fixit_get(const CB_DiagIter *it, size_t i, CB_FixIt *out) {
 }
 
 void cb_diag_iter_destroy(CB_DiagIter *it) { delete it; }
-

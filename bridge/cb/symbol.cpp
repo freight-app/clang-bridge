@@ -180,9 +180,71 @@ public:
 };
 
 // Checks expression reference nodes first, then declaration sites.
+/// Convert a 1-based UTF-16 column (what the LSP client sends) into the 1-based
+/// byte column clang uses. Identity for ASCII lines; on a line with multi-byte
+/// characters the byte column is larger.
+static uint32_t utf16_to_byte_col(const SourceManager &SM, FileID fid,
+                                  uint32_t line, uint32_t utf16_col) {
+    SourceLocation lineStart = SM.translateLineCol(fid, line, 1);
+    if (lineStart.isInvalid()) return utf16_col; // best effort
+    bool invalid = false;
+    const char *data = SM.getCharacterData(lineStart, &invalid);
+    if (invalid || !data) return utf16_col;
+    // Advance `utf16_col - 1` UTF-16 units from the line start, counting the
+    // UTF-8 bytes consumed → the 1-based byte column.
+    uint32_t want = utf16_col > 0 ? utf16_col - 1 : 0;
+    uint32_t units = 0;
+    size_t bytes = 0;
+    while (units < want && data[bytes] != '\0' && data[bytes] != '\n') {
+        unsigned char c = (unsigned char)data[bytes];
+        size_t cp = c < 0x80 ? 1 : c < 0xE0 ? 2 : c < 0xF0 ? 3 : 4;
+        units += (cp == 4) ? 2 : 1; // 4-byte UTF-8 = surrogate pair = 2 units
+        bytes += cp;
+    }
+    return (uint32_t)bytes + 1;
+}
+
+SourceLocation translate_line_col_utf16(const SourceManager &SM, FileID fid,
+                                        uint32_t line, uint32_t utf16_col) {
+    return SM.translateLineCol(fid, line,
+                               utf16_to_byte_col(SM, fid, line, utf16_col));
+}
+
+uint32_t utf16_length(StringRef text) {
+    uint32_t units = 0;
+    for (size_t i = 0; i < text.size();) {
+        unsigned char c = static_cast<unsigned char>(text[i]);
+        size_t bytes = c < 0x80 ? 1 : c < 0xE0 ? 2 : c < 0xF0 ? 3 : 4;
+        if (i + bytes > text.size()) bytes = 1;
+        units += bytes == 4 ? 2 : 1;
+        i += bytes;
+    }
+    return units;
+}
+
+uint32_t source_location_utf16_col(const SourceManager &SM,
+                                   SourceLocation loc) {
+    loc = SM.getFileLoc(loc);
+    if (loc.isInvalid()) return 0;
+    PresumedLoc presumed = SM.getPresumedLoc(loc);
+    if (!presumed.isValid()) return 0;
+
+    bool invalid = false;
+    const char *at = SM.getCharacterData(loc, &invalid);
+    if (invalid || !at) return static_cast<uint32_t>(presumed.getColumn());
+
+    size_t byte_prefix = presumed.getColumn() > 0
+                             ? static_cast<size_t>(presumed.getColumn() - 1)
+                             : 0;
+    return utf16_length(StringRef(at - byte_prefix, byte_prefix)) + 1;
+}
+
 const NamedDecl *locate_symbol_at(ASTUnit *ast, uint32_t line, uint32_t col) {
     ASTContext &Ctx = ast->getASTContext();
     const SourceManager &SM = Ctx.getSourceManager();
+    // The client sends a UTF-16 column; convert it to a byte column once so the
+    // byte-based comparisons in RefLocator/DeclLocator below line up.
+    col = utf16_to_byte_col(SM, SM.getMainFileID(), line, col);
 
     // Clangd pattern: only proceed when the cursor is on an identifier token.
     // Hovering on punctuation (::, (, *, etc.) should return nothing rather
@@ -192,6 +254,7 @@ const NamedDecl *locate_symbol_at(ASTUnit *ast, uint32_t line, uint32_t col) {
     // different entity (synthesised constraint nodes at a concept call site).
     StringRef cursor_ident;
     {
+        // `col` is already a byte column (converted above).
         SourceLocation loc = SM.translateLineCol(SM.getMainFileID(), line, col);
         if (loc.isValid()) {
             Token tok;
@@ -277,4 +340,3 @@ const char *cb_symbol_signature(const CB_Symbol *s) { return s->signature.c_str(
 const char *cb_symbol_def_file(const CB_Symbol *s)  { return s->def_file.c_str(); }
 uint32_t    cb_symbol_def_line(const CB_Symbol *s)  { return s->def_line; }
 void        cb_symbol_destroy(CB_Symbol *s)         { delete s; }
-

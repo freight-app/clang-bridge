@@ -29,9 +29,11 @@ CB_CodeActionList *cb_code_actions(CB_TransUnit *tu, uint32_t line, uint32_t /*c
             e.title       = sd.getMessage().str();
             e.file        = sl.getFilename() ? sl.getFilename() : "";
             e.line        = sl.getLine();
-            e.col         = sl.getColumn();
+            e.col         = source_location_utf16_col(SM, fi.RemoveRange.getBegin());
             e.end_line    = el.isValid() ? el.getLine()   : sl.getLine();
-            e.end_col     = el.isValid() ? el.getColumn() : sl.getColumn();
+            e.end_col     = el.isValid()
+                                ? source_location_utf16_col(SM, fi.RemoveRange.getEnd())
+                                : e.col;
             e.replacement = fi.CodeToInsert;
             list->actions.push_back(std::move(e));
         }
@@ -64,7 +66,7 @@ char *cb_expand_macro(CB_TransUnit *tu, uint32_t line, uint32_t col) {
     const LangOptions   &LO  = Ctx.getLangOpts();
     Preprocessor        &PP  = tu->ast->getPreprocessor();
 
-    SourceLocation target = SM.translateLineCol(SM.getMainFileID(), line, col);
+    SourceLocation target = translate_line_col_utf16(SM, SM.getMainFileID(), line, col);
     if (!target.isValid()) return nullptr;
 
     Token tok;
@@ -174,9 +176,13 @@ char *cb_ast_dump(CB_TransUnit *tu, uint32_t start_line, uint32_t end_line) {
             auto pb = SM.getPresumedLoc(SM.getSpellingLoc(D->getBeginLoc()));
             auto pe = SM.getPresumedLoc(SM.getSpellingLoc(D->getEndLoc()));
             e.line     = pb.isValid() ? pb.getLine()   : 0;
-            e.col      = pb.isValid() ? pb.getColumn() : 0;
+            e.col      = pb.isValid()
+                             ? source_location_utf16_col(SM, SM.getSpellingLoc(D->getBeginLoc()))
+                             : 0;
             e.end_line = pe.isValid() ? pe.getLine()   : 0;
-            e.end_col  = pe.isValid() ? pe.getColumn() : 0;
+            e.end_col  = pe.isValid()
+                             ? source_location_utf16_col(SM, SM.getSpellingLoc(D->getEndLoc()))
+                             : 0;
             out.push_back(std::move(e));
             return true;
         }

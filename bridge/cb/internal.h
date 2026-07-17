@@ -81,3 +81,22 @@ std::string find_clang_resource_dir();
 
 /// Locate the most specific NamedDecl under the cursor at (line, col).
 const NamedDecl *locate_symbol_at(ASTUnit *ast, uint32_t line, uint32_t col);
+
+/// Translate a 1-based `(line, utf16_col)` position from the LSP client into a
+/// `SourceLocation`, converting the UTF-16 column to a byte column against the
+/// line's buffer. clang's `translateLineCol` expects byte columns, but LSP
+/// positions are UTF-16 code units — so on any line with multi-byte characters
+/// the raw column lands on the wrong token. Use this for every incoming cursor.
+clang::SourceLocation translate_line_col_utf16(const clang::SourceManager &SM,
+                                               clang::FileID fid,
+                                               uint32_t line,
+                                               uint32_t utf16_col);
+
+/// Convert clang's 1-based byte column for `loc` into a 1-based UTF-16 column
+/// for the LSP-facing C API. The location is reduced to its file location so
+/// macro expansion sites are measured against the buffer clients display.
+uint32_t source_location_utf16_col(const clang::SourceManager &SM,
+                                  clang::SourceLocation loc);
+
+/// Count UTF-16 code units in UTF-8 source text.
+uint32_t utf16_length(llvm::StringRef text);

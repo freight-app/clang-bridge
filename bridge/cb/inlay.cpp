@@ -161,7 +161,7 @@ public:
             if (!p.isValid()) continue;
             InlayHintEntry h;
             h.line  = p.getLine();
-            h.col   = p.getColumn();
+            h.col   = source_location_utf16_col(SM, SM.getFileLoc(arg->getBeginLoc()));
             h.label = (pname + ":").str();
             h.kind  = 0;
             hints.push_back(std::move(h));
@@ -195,7 +195,7 @@ public:
             if (!p.isValid()) continue;
             InlayHintEntry h;
             h.line  = p.getLine();
-            h.col   = p.getColumn();
+            h.col   = source_location_utf16_col(SM, SM.getFileLoc(arg->getBeginLoc()));
             h.label = (pname + ":").str();
             h.kind  = 0;
             hints.push_back(std::move(h));
@@ -227,7 +227,7 @@ public:
                 if (!p.isValid()) continue;
                 InlayHintEntry h;
                 h.line  = p.getLine();
-                h.col   = p.getColumn();
+                h.col   = source_location_utf16_col(SM, loc);
                 h.label = "[" + std::to_string(i) + "]=";
                 h.kind  = 3;
                 hints.push_back(std::move(h));
@@ -269,7 +269,7 @@ public:
 
             InlayHintEntry h;
             h.line  = p.getLine();
-            h.col   = p.getColumn();
+            h.col   = source_location_utf16_col(SM, loc);
             h.label = "." + fieldName.str() + " =";
             h.kind  = 3;
             hints.push_back(std::move(h));
@@ -296,7 +296,7 @@ public:
         if (!p.isValid()) return;
         InlayHintEntry h;
         h.line  = p.getLine();
-        h.col   = p.getColumn() + 1; // one past the `)` or `]`
+        h.col   = source_location_utf16_col(SM, anchorLoc) + 1;
         h.label = "-> " + typeStr;
         h.kind  = 1;
         hints.push_back(std::move(h));
@@ -397,7 +397,7 @@ public:
         uint32_t closingLen = 1 + (uint32_t)(trailing.empty() ? 0 : optPunct.size());
         InlayHintEntry h;
         h.line  = (uint32_t)p.getLine();
-        h.col   = (uint32_t)p.getColumn() + closingLen;
+        h.col   = source_location_utf16_col(SM, endLoc) + closingLen;
         h.label = std::move(label);
         h.kind  = 2;
         hints.push_back(std::move(h));
@@ -489,7 +489,8 @@ public:
                 InlayHintEntry h;
                 h.line  = bploc.getLine();
                 // Place after the binding name, not before (HintSide::Right).
-                h.col   = bploc.getColumn() + (uint32_t)bname.size();
+                h.col   = source_location_utf16_col(SM, BD->getLocation())
+                          + utf16_length(bname);
                 h.label = ": " + BT.getCanonicalType().getAsString(PP);
                 h.kind  = 1;
                 hints.push_back(std::move(h));
@@ -526,7 +527,8 @@ public:
         InlayHintEntry h;
         h.line  = p.getLine();
         // Place after the variable name (HintSide::Right), not before.
-        h.col   = p.getColumn() + (uint32_t)vname.size();
+        h.col   = source_location_utf16_col(SM, D->getLocation())
+                  + utf16_length(vname);
         h.label = ": " + typeStr;
         h.kind  = 1;
         hints.push_back(std::move(h));
@@ -545,8 +547,10 @@ public:
         if (!inViewport(endLoc)) return true;
         auto p = SM.getPresumedLoc(SM.getSpellingLoc(endLoc));
         if (!p.isValid()) return true;
-        unsigned tokLen = Lexer::MeasureTokenLength(
-            SM.getSpellingLoc(endLoc), SM, Ctx.getLangOpts());
+        SourceLocation spellingEnd = SM.getSpellingLoc(endLoc);
+        SourceLocation afterToken =
+            Lexer::getLocForEndOfToken(spellingEnd, 0, SM, Ctx.getLangOpts());
+        if (afterToken.isInvalid()) afterToken = spellingEnd;
         PrintingPolicy PP(Ctx.getLangOpts());
         PP.SuppressScope = 1;
         PP.AnonymousTagLocations = 0;
@@ -554,7 +558,7 @@ public:
         if (typeStr.empty()) return true;
         InlayHintEntry h;
         h.line  = p.getLine();
-        h.col   = p.getColumn() + tokLen;
+        h.col   = source_location_utf16_col(SM, afterToken);
         h.label = ": " + typeStr;
         h.kind  = 1;
         hints.push_back(std::move(h));
@@ -632,7 +636,7 @@ char *cb_macro_at(CB_TransUnit *tu, uint32_t line, uint32_t col) {
 
     // Translate 1-based (line, col) → SourceLocation in the main file.
     SourceLocation target =
-        SM.translateLineCol(SM.getMainFileID(), line, col);
+        translate_line_col_utf16(SM, SM.getMainFileID(), line, col);
     if (!target.isValid()) return nullptr;
 
     // Lex the raw token at the cursor position.
